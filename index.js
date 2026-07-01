@@ -190,20 +190,41 @@ async function sendDailySummary() {
         let totalRevenue = 0;
         let totalReceipts = receipts.length;
         let totalItemsSold = 0;
+        let itemCounts = {};
         
         receipts.forEach(receipt => {
             totalRevenue += (receipt.total_money || 0);
             const items = receipt.line_items || [];
             items.forEach(item => {
-                totalItemsSold += (item.quantity || 1);
+                const qty = item.quantity || 1;
+                const name = item.item_name || 'Unknown Item';
+                totalItemsSold += qty;
+                
+                if (itemCounts[name]) {
+                    itemCounts[name] += qty;
+                } else {
+                    itemCounts[name] = qty;
+                }
             });
         });
+
+        // Format items list
+        // Sort items by quantity (highest first)
+        const sortedItems = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]);
+        let itemsListString = sortedItems.map(([name, qty]) => `- ${name}: ${qty} ชิ้น`).join('\n');
+        
+        if (itemsListString.length === 0) {
+            itemsListString = '- ไม่มีสินค้าที่ขายได้เลย';
+        } else if (itemsListString.length > 2048) {
+            // Discord embed description limit is 4096, but keep it safe
+            itemsListString = itemsListString.substring(0, 2000) + '\n... (รายการยาวเกินไป)';
+        }
 
         // Create Discord embed for Daily Summary
         const embed = {
             title: `📊 สรุปยอดขายประจำวัน - ${now.toFormat('dd/MM/yyyy')}`,
             color: 0x9B59B6, // Purple
-            description: `รายงานสรุปยอดขายประจำวันนี้ส่งตรงจาก Loyverse ครับ`,
+            description: `**รายการสินค้าที่ขายได้วันนี้:**\n${itemsListString}`,
             fields: [
                 {
                     name: 'ยอดขายรวม (Total Revenue)',
@@ -211,12 +232,12 @@ async function sendDailySummary() {
                     inline: true
                 },
                 {
-                    name: 'จำนวนบิลทั้งหมด (Total Receipts)',
+                    name: 'จำนวนบิล (Receipts)',
                     value: `${totalReceipts} บิล`,
                     inline: true
                 },
                 {
-                    name: 'จำนวนสินค้าที่ขายได้ (Items Sold)',
+                    name: 'รวมจำนวนชิ้น (Items)',
                     value: `${totalItemsSold} ชิ้น`,
                     inline: true
                 }

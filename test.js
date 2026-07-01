@@ -22,7 +22,7 @@ const payload = {
 const payloadString = JSON.stringify(payload);
 const signature = crypto.createHmac('sha1', secret).update(payloadString).digest('base64');
 
-fetch('http://localhost:3005/webhook/loyverse', {
+fetch('https://loyverse-discord-webhook.onrender.com/webhook/loyverse', {
     method: 'POST',
     headers: {
         'Content-Type': 'application/json',
