@@ -118,14 +118,16 @@ app.get('/test-summary', async (req, res) => {
     res.send('Summary triggered! Check your Discord.');
 });
 
-// Endpoint to request a summary for a specific past date
-app.get('/summary', async (req, res) => {
-    const dateParam = req.query.date;
-    if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
-        return res.status(400).send('กรุณาระบุวันที่ในรูปแบบ YYYY-MM-DD เช่น /summary?date=2026-06-30');
+// Endpoint to request a summary for a specific month
+app.get('/monthly', async (req, res) => {
+    const monthParam = req.query.month;
+    if (!monthParam || !/^\d{4}-\d{2}$/.test(monthParam)) {
+        return res.status(400).send('กรุณาระบุเดือนในรูปแบบ YYYY-MM เช่น /monthly?month=2026-06');
     }
-    await sendDailySummary(dateParam);
-    res.send(`ดึงข้อมูลสรุปยอดขายของวันที่ ${dateParam} สำเร็จ! กรุณาตรวจสอบใน Discord ครับ`);
+    
+    // We don't await this so the browser returns immediately, preventing timeout
+    sendMonthlySummary(monthParam).catch(err => console.error(err));
+    res.send(`ระบบกำลังดึงข้อมูลสรุปยอดขายของเดือน ${monthParam} (อาจใช้เวลาสักครู่หากมีบิลเยอะ) กรุณารอข้อความเด้งใน Discord ครับ`);
 });
 
 // Function to send the message to Discord
@@ -169,6 +171,120 @@ cron.schedule('0 23 * * *', async () => {
     timezone: "Asia/Bangkok"
 });
 
+async function fetchAllReceipts(startIso, endIso) {
+    let allReceipts = [];
+    let cursor = null;
+    let hasMore = true;
+
+    while (hasMore) {
+        const params = {
+            created_at_min: startIso,
+            created_at_max: endIso,
+            limit: 250
+        };
+        if (cursor) {
+            params.cursor = cursor;
+        }
+
+        const response = await axios.get('https://api.loyverse.com/v1.0/receipts', {
+            params: params,
+            headers: {
+                'Authorization': `Bearer ${LOYVERSE_ACCESS_TOKEN}`
+            }
+        });
+
+        const receipts = response.data.receipts || [];
+        allReceipts = allReceipts.concat(receipts);
+
+        if (response.data.cursor) {
+            cursor = response.data.cursor;
+        } else {
+            hasMore = false;
+        }
+    }
+    return allReceipts;
+}
+
+async function sendMonthlySummary(monthString) {
+    try {
+        if (!LOYVERSE_ACCESS_TOKEN) {
+            console.error('Loyverse Access Token not configured for monthly summary');
+            return;
+        }
+
+        const targetDate = DateTime.fromISO(`${monthString}-01`, { zone: 'Asia/Bangkok' });
+        if (!targetDate.isValid) {
+            console.error('Invalid month provided:', monthString);
+            return;
+        }
+
+        const startOfMonth = targetDate.startOf('month').toUTC().toISO();
+        const endOfMonth = targetDate.endOf('month').toUTC().toISO();
+
+        console.log(`Fetching monthly receipts from ${startOfMonth} to ${endOfMonth}`);
+        const receipts = await fetchAllReceipts(startOfMonth, endOfMonth);
+
+        let totalRevenue = 0;
+        let totalReceipts = receipts.length;
+        let totalItemsSold = 0;
+        let itemCounts = {};
+        
+        receipts.forEach(receipt => {
+            totalRevenue += (receipt.total_money || 0);
+            const items = receipt.line_items || [];
+            items.forEach(item => {
+                const qty = item.quantity || 1;
+                const name = item.item_name || 'Unknown Item';
+                totalItemsSold += qty;
+                
+                if (itemCounts[name]) {
+                    itemCounts[name] += qty;
+                } else {
+                    itemCounts[name] = qty;
+                }
+            });
+        });
+
+        const sortedItems = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]);
+        let itemsListString = sortedItems.map(([name, qty]) => `- ${name}: ${qty} ชิ้น`).join('\n');
+        
+        if (itemsListString.length === 0) {
+            itemsListString = '- ไม่มีสินค้าที่ขายได้เลย';
+        } else if (itemsListString.length > 2048) {
+            itemsListString = itemsListString.substring(0, 2000) + '\n... (รายการยาวเกินไป)';
+        }
+
+        const embed = {
+            title: `📅 สรุปยอดขายประจำเดือน - ${targetDate.toFormat('MM/yyyy')}`,
+            color: 0x3498DB, // Blue
+            description: `**สรุปรายการสินค้าที่ขายได้ตลอดทั้งเดือน:**\n${itemsListString}`,
+            fields: [
+                {
+                    name: 'ยอดขายรวม (Total Revenue)',
+                    value: `฿${totalRevenue.toFixed(2)}`,
+                    inline: true
+                },
+                {
+                    name: 'จำนวนบิล (Receipts)',
+                    value: `${totalReceipts} บิล`,
+                    inline: true
+                },
+                {
+                    name: 'รวมจำนวนชิ้น (Items)',
+                    value: `${totalItemsSold} ชิ้น`,
+                    inline: true
+                }
+            ],
+            timestamp: new Date().toISOString()
+        };
+
+        await sendToDiscord(embed);
+
+    } catch (error) {
+        console.error('Error generating monthly summary:', error.message);
+    }
+}
+
 async function sendDailySummary(dateString = null) {
     try {
         if (!LOYVERSE_ACCESS_TOKEN) {
@@ -188,20 +304,7 @@ async function sendDailySummary(dateString = null) {
         const endOfDay = targetDate.endOf('day').toUTC().toISO();
 
         console.log(`Fetching receipts from ${startOfDay} to ${endOfDay}`);
-
-        // Fetch receipts from Loyverse
-        const response = await axios.get('https://api.loyverse.com/v1.0/receipts', {
-            params: {
-                created_at_min: startOfDay,
-                created_at_max: endOfDay,
-                limit: 250 // You can implement pagination here if you have >250 receipts/day
-            },
-            headers: {
-                'Authorization': `Bearer ${LOYVERSE_ACCESS_TOKEN}`
-            }
-        });
-
-        const receipts = response.data.receipts || [];
+        const receipts = await fetchAllReceipts(startOfDay, endOfDay);
         
         let totalRevenue = 0;
         let totalReceipts = receipts.length;
