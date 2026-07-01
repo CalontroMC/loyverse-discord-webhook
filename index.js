@@ -112,10 +112,20 @@ app.post('/webhook/loyverse', async (req, res) => {
     }
 });
 
-// Endpoint to trigger the daily summary manually for testing
+// Endpoint to trigger the daily summary manually for today
 app.get('/test-summary', async (req, res) => {
     await sendDailySummary();
     res.send('Summary triggered! Check your Discord.');
+});
+
+// Endpoint to request a summary for a specific past date
+app.get('/summary', async (req, res) => {
+    const dateParam = req.query.date;
+    if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+        return res.status(400).send('กรุณาระบุวันที่ในรูปแบบ YYYY-MM-DD เช่น /summary?date=2026-06-30');
+    }
+    await sendDailySummary(dateParam);
+    res.send(`ดึงข้อมูลสรุปยอดขายของวันที่ ${dateParam} สำเร็จ! กรุณาตรวจสอบใน Discord ครับ`);
 });
 
 // Function to send the message to Discord
@@ -159,17 +169,23 @@ cron.schedule('0 23 * * *', async () => {
     timezone: "Asia/Bangkok"
 });
 
-async function sendDailySummary() {
+async function sendDailySummary(dateString = null) {
     try {
         if (!LOYVERSE_ACCESS_TOKEN) {
             console.error('Loyverse Access Token not configured for daily summary');
             return;
         }
 
-        // Calculate today's start and end times in Bangkok timezone
-        const now = DateTime.now().setZone('Asia/Bangkok');
-        const startOfDay = now.startOf('day').toUTC().toISO();
-        const endOfDay = now.endOf('day').toUTC().toISO();
+        // Determine target date in Bangkok timezone
+        let targetDate;
+        if (dateString) {
+            targetDate = DateTime.fromISO(dateString, { zone: 'Asia/Bangkok' });
+        } else {
+            targetDate = DateTime.now().setZone('Asia/Bangkok');
+        }
+
+        const startOfDay = targetDate.startOf('day').toUTC().toISO();
+        const endOfDay = targetDate.endOf('day').toUTC().toISO();
 
         console.log(`Fetching receipts from ${startOfDay} to ${endOfDay}`);
 
@@ -222,7 +238,7 @@ async function sendDailySummary() {
 
         // Create Discord embed for Daily Summary
         const embed = {
-            title: `📊 สรุปยอดขายประจำวัน - ${now.toFormat('dd/MM/yyyy')}`,
+            title: `📊 สรุปยอดขายประจำวัน - ${targetDate.toFormat('dd/MM/yyyy')}`,
             color: 0x9B59B6, // Purple
             description: `**รายการสินค้าที่ขายได้วันนี้:**\n${itemsListString}`,
             fields: [
