@@ -162,6 +162,54 @@ async function sendToDiscord(embed) {
 // Daily Summary Cron Job
 // ------------------------------------------------------------------
 
+async function sendSummaryToDiscord(title, color, descriptionPrefix, sortedItems, fields) {
+    const MAX_EMBED_DESC = 3000;
+    
+    // Chunk the sortedItems into strings of max 3000 chars
+    let chunks = [];
+    let currentChunk = "";
+    
+    sortedItems.forEach(([name, qty]) => {
+        const line = `- ${name}: ${qty} ชิ้น\n`;
+        if (currentChunk.length + line.length > MAX_EMBED_DESC) {
+            chunks.push(currentChunk);
+            currentChunk = line;
+        } else {
+            currentChunk += line;
+        }
+    });
+    if (currentChunk) {
+        chunks.push(currentChunk);
+    }
+    
+    if (chunks.length === 0) {
+        chunks = ['- ไม่มีสินค้าที่ขายได้เลย'];
+    }
+    
+    for (let i = 0; i < chunks.length; i++) {
+        const isFirst = (i === 0);
+        
+        const embed = {
+            title: isFirst ? title : `${title} (ต่อส่วนที่ ${i+1}/${chunks.length})`,
+            color: color,
+            description: isFirst ? `${descriptionPrefix}\n${chunks[i]}` : chunks[i],
+            timestamp: new Date().toISOString()
+        };
+        
+        // Only attach fields (Revenue, etc.) to the FIRST message
+        if (isFirst && fields) {
+            embed.fields = fields;
+        }
+        
+        await sendToDiscord(embed);
+        
+        // Add a small delay between messages to avoid Discord rate limit
+        if (chunks.length > 1) {
+            await new Promise(r => setTimeout(r, 1000));
+        }
+    }
+}
+
 // Schedule the task at 23:00 (11 PM) every day in Bangkok time
 cron.schedule('0 23 * * *', async () => {
     console.log('Running daily sales summary task (11 PM)...');
@@ -246,39 +294,27 @@ async function sendMonthlySummary(monthString) {
         });
 
         const sortedItems = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]);
-        let itemsListString = sortedItems.map(([name, qty]) => `- ${name}: ${qty} ชิ้น`).join('\n');
-        
-        if (itemsListString.length === 0) {
-            itemsListString = '- ไม่มีสินค้าที่ขายได้เลย';
-        } else if (itemsListString.length > 2048) {
-            itemsListString = itemsListString.substring(0, 2000) + '\n... (รายการยาวเกินไป)';
-        }
+        const title = `📅 สรุปยอดขายประจำเดือน - ${targetDate.toFormat('MM/yyyy')}`;
+        const descriptionPrefix = `**สรุปรายการสินค้าที่ขายได้ตลอดทั้งเดือน:**`;
+        const fields = [
+            {
+                name: 'ยอดขายรวม (Total Revenue)',
+                value: `฿${totalRevenue.toFixed(2)}`,
+                inline: true
+            },
+            {
+                name: 'จำนวนบิล (Receipts)',
+                value: `${totalReceipts} บิล`,
+                inline: true
+            },
+            {
+                name: 'รวมจำนวนชิ้น (Items)',
+                value: `${totalItemsSold} ชิ้น`,
+                inline: true
+            }
+        ];
 
-        const embed = {
-            title: `📅 สรุปยอดขายประจำเดือน - ${targetDate.toFormat('MM/yyyy')}`,
-            color: 0x3498DB, // Blue
-            description: `**สรุปรายการสินค้าที่ขายได้ตลอดทั้งเดือน:**\n${itemsListString}`,
-            fields: [
-                {
-                    name: 'ยอดขายรวม (Total Revenue)',
-                    value: `฿${totalRevenue.toFixed(2)}`,
-                    inline: true
-                },
-                {
-                    name: 'จำนวนบิล (Receipts)',
-                    value: `${totalReceipts} บิล`,
-                    inline: true
-                },
-                {
-                    name: 'รวมจำนวนชิ้น (Items)',
-                    value: `${totalItemsSold} ชิ้น`,
-                    inline: true
-                }
-            ],
-            timestamp: new Date().toISOString()
-        };
-
-        await sendToDiscord(embed);
+        await sendSummaryToDiscord(title, 0x3498DB, descriptionPrefix, sortedItems, fields);
 
     } catch (error) {
         console.error('Error generating monthly summary:', error.message);
@@ -327,44 +363,28 @@ async function sendDailySummary(dateString = null) {
             });
         });
 
-        // Format items list
-        // Sort items by quantity (highest first)
         const sortedItems = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]);
-        let itemsListString = sortedItems.map(([name, qty]) => `- ${name}: ${qty} ชิ้น`).join('\n');
-        
-        if (itemsListString.length === 0) {
-            itemsListString = '- ไม่มีสินค้าที่ขายได้เลย';
-        } else if (itemsListString.length > 2048) {
-            // Discord embed description limit is 4096, but keep it safe
-            itemsListString = itemsListString.substring(0, 2000) + '\n... (รายการยาวเกินไป)';
-        }
+        const title = `📊 สรุปยอดขายประจำวัน - ${targetDate.toFormat('dd/MM/yyyy')}`;
+        const descriptionPrefix = `**รายการสินค้าที่ขายได้วันนี้:**`;
+        const fields = [
+            {
+                name: 'ยอดขายรวม (Total Revenue)',
+                value: `฿${totalRevenue.toFixed(2)}`,
+                inline: true
+            },
+            {
+                name: 'จำนวนบิล (Receipts)',
+                value: `${totalReceipts} บิล`,
+                inline: true
+            },
+            {
+                name: 'รวมจำนวนชิ้น (Items)',
+                value: `${totalItemsSold} ชิ้น`,
+                inline: true
+            }
+        ];
 
-        // Create Discord embed for Daily Summary
-        const embed = {
-            title: `📊 สรุปยอดขายประจำวัน - ${targetDate.toFormat('dd/MM/yyyy')}`,
-            color: 0x9B59B6, // Purple
-            description: `**รายการสินค้าที่ขายได้วันนี้:**\n${itemsListString}`,
-            fields: [
-                {
-                    name: 'ยอดขายรวม (Total Revenue)',
-                    value: `฿${totalRevenue.toFixed(2)}`,
-                    inline: true
-                },
-                {
-                    name: 'จำนวนบิล (Receipts)',
-                    value: `${totalReceipts} บิล`,
-                    inline: true
-                },
-                {
-                    name: 'รวมจำนวนชิ้น (Items)',
-                    value: `${totalItemsSold} ชิ้น`,
-                    inline: true
-                }
-            ],
-            timestamp: new Date().toISOString()
-        };
-
-        await sendToDiscord(embed);
+        await sendSummaryToDiscord(title, 0x9B59B6, descriptionPrefix, sortedItems, fields);
         console.log('Daily summary sent successfully.');
 
     } catch (error) {
