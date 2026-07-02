@@ -363,16 +363,17 @@ async function sendMonthlySummary(monthString) {
         // Monthly Target Progress
         // -------------------------
         const MONTHLY_TARGET = 100000; // Default target 100,000 THB
-        let progressPercentage = Math.min(Math.round((totalRevenue / MONTHLY_TARGET) * 100), 100);
+        // Ensure progress is between 0 and 100
+        let progressPercentage = Math.max(0, Math.min(Math.round((totalRevenue / MONTHLY_TARGET) * 100), 100));
         let filledBars = Math.floor(progressPercentage / 10);
-        let emptyBars = 10 - filledBars;
+        let emptyBars = Math.max(0, 10 - filledBars);
         let progressBar = `[${'█'.repeat(filledBars)}${'░'.repeat(emptyBars)}] ${progressPercentage}%`;
         let targetText = `เป้าหมาย: ฿${MONTHLY_TARGET.toLocaleString()} \n`;
         if (totalRevenue >= MONTHLY_TARGET) {
             targetText += `🎉 ยินดีด้วย! ยอดขายทะลุเป้าหมายแล้ว!`;
         } else {
             let remaining = MONTHLY_TARGET - totalRevenue;
-            targetText += `(ขาดอีก ฿${remaining.toLocaleString()} จะถึงเป้า)`;
+            targetText += `(ขาดอีก ฿${remaining.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} จะถึงเป้า)`;
         }
 
         const title = `📅 สรุปยอดขายประจำเดือน - ${targetDate.toFormat('MM/yyyy')}`;
