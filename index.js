@@ -214,7 +214,7 @@ async function sendToDiscord(embed) {
 // Daily Summary Cron Job
 // ------------------------------------------------------------------
 
-async function sendSummaryToDiscord(title, color, descriptionPrefix, sortedItems, fields) {
+async function sendSummaryToDiscord(title, color, descriptionPrefix, sortedItems, fields, imageUrl = null) {
     const MAX_EMBED_DESC = 3000;
     
     // Chunk the sortedItems into strings of max 3000 chars
@@ -251,6 +251,11 @@ async function sendSummaryToDiscord(title, color, descriptionPrefix, sortedItems
         // Only attach fields (Revenue, etc.) to the FIRST message
         if (isFirst && fields) {
             embed.fields = fields;
+        }
+        
+        // Only attach the chart image to the FIRST message
+        if (isFirst && imageUrl) {
+            embed.image = { url: imageUrl };
         }
         
         await sendToDiscord(embed);
@@ -416,8 +421,34 @@ async function sendMonthlySummary(monthString) {
                 inline: true
             }
         ];
+        
+        // Generate Bar Chart URL for top 10 items
+        let chartUrl = null;
+        if (sortedItems.length > 0) {
+            const topItems = sortedItems.slice(0, 10);
+            const chartConfig = {
+                type: 'bar',
+                data: {
+                    labels: topItems.map(i => i[0].length > 15 ? i[0].substring(0, 15) + '...' : i[0]), // Truncate long names
+                    datasets: [{
+                        label: 'ขายได้ (ชิ้น)',
+                        data: topItems.map(i => i[1]),
+                        backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                        borderColor: 'rgb(54, 162, 235)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    plugins: {
+                        legend: { display: false },
+                        title: { display: true, text: 'Top 10 สินค้าขายดีประจำเดือน' }
+                    }
+                }
+            };
+            chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
+        }
 
-        await sendSummaryToDiscord(title, 0x3498DB, descriptionPrefix, sortedItems, fields);
+        await sendSummaryToDiscord(title, 0x3498DB, descriptionPrefix, sortedItems, fields, chartUrl);
 
     } catch (error) {
         console.error('Error generating monthly summary:', error.message);
@@ -534,8 +565,34 @@ async function sendDailySummary(dateString = null) {
                 inline: true
             }
         ];
+        
+        // Generate Bar Chart URL for top 10 items
+        let chartUrl = null;
+        if (sortedItems.length > 0) {
+            const topItems = sortedItems.slice(0, 10);
+            const chartConfig = {
+                type: 'bar',
+                data: {
+                    labels: topItems.map(i => i[0].length > 15 ? i[0].substring(0, 15) + '...' : i[0]),
+                    datasets: [{
+                        label: 'ขายได้ (ชิ้น)',
+                        data: topItems.map(i => i[1]),
+                        backgroundColor: 'rgba(155, 89, 182, 0.6)', // Purple to match embed color
+                        borderColor: 'rgb(155, 89, 182)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    plugins: {
+                        legend: { display: false },
+                        title: { display: true, text: 'Top 10 สินค้าขายดีประจำวัน' }
+                    }
+                }
+            };
+            chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
+        }
 
-        await sendSummaryToDiscord(title, 0x9B59B6, descriptionPrefix, sortedItems, fields);
+        await sendSummaryToDiscord(title, 0x9B59B6, descriptionPrefix, sortedItems, fields, chartUrl);
         console.log('Daily summary sent successfully.');
 
     } catch (error) {
