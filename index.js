@@ -54,6 +54,9 @@ app.post('/webhook/loyverse', async (req, res) => {
                 for (const receipt of receipts) {
                     const total = receipt.total_money || 0;
                     const items = receipt.line_items || [];
+                    const isRefund = (receipt.receipt_type === 'REFUND') || (total < 0);
+                    const totalDiscount = receipt.total_discount || 0;
+                    const payments = receipt.payments || [];
                     
                     // Format the items list
                     let itemsDescription = items.map(item => {
@@ -63,14 +66,28 @@ app.post('/webhook/loyverse', async (req, res) => {
                     if (itemsDescription.length === 0) {
                         itemsDescription = 'No items found in receipt.';
                     }
+                    
+                    // Format Payment Methods
+                    let paymentsDescription = '';
+                    if (payments.length > 0) {
+                        paymentsDescription = '\n\n**💳 ชำระผ่าน:**\n' + payments.map(p => `- ${p.name || 'Unknown'}: ฿${p.money_amount || 0}`).join('\n');
+                    }
+
+                    // Format Discounts
+                    let discountDescription = '';
+                    if (totalDiscount > 0) {
+                        discountDescription = `\n\n**⚠️ ส่วนลด:** ให้ส่วนลด ฿${totalDiscount}`;
+                    } else if (totalDiscount < 0) {
+                        discountDescription = `\n\n**⚠️ ส่วนลด:** ให้ส่วนลด ฿${Math.abs(totalDiscount)}`;
+                    }
 
                     embed = {
-                        title: `🧾 New Receipt: #${receipt.receipt_number || 'N/A'}`,
-                        color: 0x00FF00, // Green
-                        description: `A new order has been completed!\n\n**Items:**\n${itemsDescription}`,
+                        title: isRefund ? `🚨 แจ้งเตือน: มีการยกเลิกบิล/คืนเงิน (#${receipt.receipt_number || 'N/A'})` : `🧾 บิลใหม่: #${receipt.receipt_number || 'N/A'}`,
+                        color: isRefund ? 0xFF0000 : 0x00FF00, // Red for refund, Green for sale
+                        description: `A new order has been completed!\n\n**Items:**\n${itemsDescription}${discountDescription}${paymentsDescription}`,
                         fields: [
                             {
-                                name: 'Total Amount',
+                                name: 'ยอดสุทธิ (Total Amount)',
                                 value: `฿${total}`,
                                 inline: true
                             }
@@ -342,8 +359,24 @@ async function sendMonthlySummary(monthString) {
         });
 
         const sortedItems = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]);
+        // -------------------------
+        // Monthly Target Progress
+        // -------------------------
+        const MONTHLY_TARGET = 100000; // Default target 100,000 THB
+        let progressPercentage = Math.min(Math.round((totalRevenue / MONTHLY_TARGET) * 100), 100);
+        let filledBars = Math.floor(progressPercentage / 10);
+        let emptyBars = 10 - filledBars;
+        let progressBar = `[${'█'.repeat(filledBars)}${'░'.repeat(emptyBars)}] ${progressPercentage}%`;
+        let targetText = `เป้าหมาย: ฿${MONTHLY_TARGET.toLocaleString()} \n`;
+        if (totalRevenue >= MONTHLY_TARGET) {
+            targetText += `🎉 ยินดีด้วย! ยอดขายทะลุเป้าหมายแล้ว!`;
+        } else {
+            let remaining = MONTHLY_TARGET - totalRevenue;
+            targetText += `(ขาดอีก ฿${remaining.toLocaleString()} จะถึงเป้า)`;
+        }
+
         const title = `📅 สรุปยอดขายประจำเดือน - ${targetDate.toFormat('MM/yyyy')}`;
-        const descriptionPrefix = `**สรุปรายการสินค้าที่ขายได้ตลอดทั้งเดือน:**`;
+        const descriptionPrefix = `**เป้าหมายยอดขายประจำเดือน 🎯**\n${progressBar}\n${targetText}\n\n**สรุปรายการสินค้าที่ขายได้ตลอดทั้งเดือน:**`;
         const fields = [
             {
                 name: 'ยอดขายรวม (Total Revenue)',
