@@ -381,231 +381,229 @@ async function fetchAllShifts(startIso, endIso) {
 
     if (response.data.cursor) {
       cursor = response.data.cursor;
+    } else {
+      hasMore = false;
     }
-    return allShifts;
   }
+  return allShifts;
+}
 
-  async function fetchAllCategories() {
-    let allCategories = [];
-    let cursor = null;
-    let hasMore = true;
+async function fetchAllCategories() {
+  let allCategories = [];
+  let cursor = null;
+  let hasMore = true;
 
-    while (hasMore) {
-      const params = { limit: 250 };
-      if (cursor) params.cursor = cursor;
+  while (hasMore) {
+    const params = { limit: 250 };
+    if (cursor) params.cursor = cursor;
 
-      const response = await axios.get(
-        "https://api.loyverse.com/v1.0/categories",
-        {
-          params: params,
-          headers: { Authorization: `Bearer ${LOYVERSE_ACCESS_TOKEN}` },
-        }
-      );
-
-      const categories = response.data.categories || [];
-      allCategories = allCategories.concat(categories);
-
-      if (response.data.cursor) cursor = response.data.cursor;
-      else hasMore = false;
-    }
-
-    const categoryMap = {};
-    allCategories.forEach((c) => (categoryMap[c.id] = c.name));
-    return categoryMap;
-  }
-
-  async function fetchAllItems() {
-    let allItems = [];
-    let cursor = null;
-    let hasMore = true;
-
-    while (hasMore) {
-      const params = { limit: 250 };
-      if (cursor) params.cursor = cursor;
-
-      const response = await axios.get("https://api.loyverse.com/v1.0/items", {
+    const response = await axios.get(
+      "https://api.loyverse.com/v1.0/categories",
+      {
         params: params,
         headers: { Authorization: `Bearer ${LOYVERSE_ACCESS_TOKEN}` },
-      });
+      }
+    );
 
-      const items = response.data.items || [];
-      allItems = allItems.concat(items);
+    const categories = response.data.categories || [];
+    allCategories = allCategories.concat(categories);
 
-      if (response.data.cursor) cursor = response.data.cursor;
-      else hasMore = false;
-    }
-
-    const itemCategoryMap = {};
-    allItems.forEach((i) => (itemCategoryMap[i.id] = i.category_id));
-    return itemCategoryMap;
+    if (response.data.cursor) cursor = response.data.cursor;
+    else hasMore = false;
   }
 
-  async function sendMonthlySummary(monthString) {
-    try {
-      if (!LOYVERSE_ACCESS_TOKEN) {
-        console.error(
-          "Loyverse Access Token not configured for monthly summary"
-        );
-        return;
-      }
+  const categoryMap = {};
+  allCategories.forEach((c) => (categoryMap[c.id] = c.name));
+  return categoryMap;
+}
 
-      const targetDate = DateTime.fromISO(`${monthString}-01`, {
-        zone: "Asia/Bangkok",
-      });
-      if (!targetDate.isValid) {
-        console.error("Invalid month provided:", monthString);
-        return;
-      }
+async function fetchAllItems() {
+  let allItems = [];
+  let cursor = null;
+  let hasMore = true;
 
-      const startOfMonth = targetDate.startOf("month").toUTC().toISO();
-      const endOfMonth = targetDate.endOf("month").toUTC().toISO();
+  while (hasMore) {
+    const params = { limit: 250 };
+    if (cursor) params.cursor = cursor;
 
-      console.log(
-        `Fetching monthly receipts from ${startOfMonth} to ${endOfMonth}`
-      );
-      const receipts = await fetchAllReceipts(startOfMonth, endOfMonth);
-      const categoryMap = await fetchAllCategories();
-      const itemCategoryMap = await fetchAllItems();
+    const response = await axios.get("https://api.loyverse.com/v1.0/items", {
+      params: params,
+      headers: { Authorization: `Bearer ${LOYVERSE_ACCESS_TOKEN}` },
+    });
 
-      let totalRevenue = 0;
-      let totalReceipts = receipts.length;
-      let totalItemsSold = 0;
-      let itemStats = {}; // { [itemId]: { name, qty, catName } }
+    const items = response.data.items || [];
+    allItems = allItems.concat(items);
 
-      receipts.forEach((receipt) => {
-        totalRevenue += receipt.total_money || 0;
-        const items = receipt.line_items || [];
-        items.forEach((item) => {
-          const qty = item.quantity || 1;
-          const name = item.item_name || "Unknown Item";
-          const itemId = item.item_id;
-          totalItemsSold += qty;
+    if (response.data.cursor) cursor = response.data.cursor;
+    else hasMore = false;
+  }
 
-          const catId = itemCategoryMap[itemId];
-          const catName =
-            catId && categoryMap[catId] ? categoryMap[catId] : "ไม่มีหมวดหมู่";
+  const itemCategoryMap = {};
+  allItems.forEach((i) => (itemCategoryMap[i.id] = i.category_id));
+  return itemCategoryMap;
+}
 
-          if (!itemStats[itemId]) {
-            itemStats[itemId] = { name: name, qty: 0, catName: catName };
-          }
-          itemStats[itemId].qty += qty;
-        });
-      });
-
-      // Group by Category
-      const groupedItems = {};
-      Object.values(itemStats).forEach((stat) => {
-        if (!groupedItems[stat.catName]) groupedItems[stat.catName] = [];
-        groupedItems[stat.catName].push(stat);
-      });
-
-      // Format lines for Discord
-      const formattedLines = [];
-      const sortedCats = Object.keys(groupedItems).sort();
-      sortedCats.forEach((cat) => {
-        formattedLines.push(`**📂 ${cat}**\n`);
-        const itemsInCat = groupedItems[cat].sort((a, b) => b.qty - a.qty);
-        itemsInCat.forEach((i) => {
-          formattedLines.push(`- ${i.name}: ${i.qty} ชิ้น\n`);
-        });
-        formattedLines.push(`\n`);
-      });
-
-      // For Chart: overall top 10 items
-      const allItemsArray = Object.values(itemStats).sort(
-        (a, b) => b.qty - a.qty
-      );
-
-      // -------------------------
-      // Monthly Target Progress
-      // -------------------------
-      const MONTHLY_TARGET = 100000; // Default target 100,000 THB
-      // Ensure progress is between 0 and 100
-      let progressPercentage = Math.max(
-        0,
-        Math.min(Math.round((totalRevenue / MONTHLY_TARGET) * 100), 100)
-      );
-      let filledBars = Math.floor(progressPercentage / 10);
-      let emptyBars = Math.max(0, 10 - filledBars);
-      let progressBar = `[${"█".repeat(filledBars)}${"░".repeat(
-        emptyBars
-      )}] ${progressPercentage}%`;
-      let targetText = `เป้าหมาย: ฿${MONTHLY_TARGET.toLocaleString()} \n`;
-      if (totalRevenue >= MONTHLY_TARGET) {
-        targetText += `🎉 ยินดีด้วย! ยอดขายทะลุเป้าหมายแล้ว!`;
-      } else {
-        let remaining = MONTHLY_TARGET - totalRevenue;
-        targetText += `(ขาดอีก ฿${remaining.toLocaleString(undefined, {
-          minimumFractionDigits: 2,
-          maximumFractionDigits: 2,
-        })} จะถึงเป้า)`;
-      }
-
-      const title = `📅 สรุปยอดขายประจำเดือน - ${targetDate.toFormat(
-        "MM/yyyy"
-      )}`;
-      const descriptionPrefix = `**เป้าหมายยอดขายประจำเดือน 🎯**\n${progressBar}\n${targetText}\n\n**สรุปรายการสินค้าที่ขายได้ตลอดทั้งเดือน:**`;
-      const fields = [
-        {
-          name: "ยอดขายรวม (Total Revenue)",
-          value: `฿${totalRevenue.toFixed(2)}`,
-          inline: true,
-        },
-        {
-          name: "จำนวนบิล (Receipts)",
-          value: `${totalReceipts} บิล`,
-          inline: true,
-        },
-        {
-          name: "รวมจำนวนชิ้น (Items)",
-          value: `${totalItemsSold} ชิ้น`,
-          inline: true,
-        },
-      ];
-
-      // Generate Bar Chart URL for top 10 items
-      let chartUrl = null;
-      if (allItemsArray.length > 0) {
-        const topItems = allItemsArray.slice(0, 10);
-        const chartConfig = {
-          type: "bar",
-          data: {
-            labels: topItems.map((i) =>
-              i.name.length > 15 ? i.name.substring(0, 15) + "..." : i.name
-            ), // Truncate long names
-            datasets: [
-              {
-                label: "ขายได้ (ชิ้น)",
-                data: topItems.map((i) => i.qty),
-                backgroundColor: "rgba(54, 162, 235, 0.6)",
-                borderColor: "rgb(54, 162, 235)",
-                borderWidth: 1,
-              },
-            ],
-          },
-          options: {
-            plugins: {
-              legend: { display: false },
-              title: { display: true, text: "Top 10 สินค้าขายดีประจำเดือน" },
-            },
-          },
-        };
-        chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(
-          JSON.stringify(chartConfig)
-        )}`;
-      }
-
-      await sendSummaryToDiscord(
-        title,
-        0x3498db,
-        descriptionPrefix,
-        formattedLines,
-        fields,
-        chartUrl
-      );
-    } catch (error) {
-      console.error("Error generating monthly summary:", error.message);
+async function sendMonthlySummary(monthString) {
+  try {
+    if (!LOYVERSE_ACCESS_TOKEN) {
+      console.error("Loyverse Access Token not configured for monthly summary");
+      return;
     }
+
+    const targetDate = DateTime.fromISO(`${monthString}-01`, {
+      zone: "Asia/Bangkok",
+    });
+    if (!targetDate.isValid) {
+      console.error("Invalid month provided:", monthString);
+      return;
+    }
+
+    const startOfMonth = targetDate.startOf("month").toUTC().toISO();
+    const endOfMonth = targetDate.endOf("month").toUTC().toISO();
+
+    console.log(
+      `Fetching monthly receipts from ${startOfMonth} to ${endOfMonth}`
+    );
+    const receipts = await fetchAllReceipts(startOfMonth, endOfMonth);
+    const categoryMap = await fetchAllCategories();
+    const itemCategoryMap = await fetchAllItems();
+
+    let totalRevenue = 0;
+    let totalReceipts = receipts.length;
+    let totalItemsSold = 0;
+    let itemStats = {}; // { [itemId]: { name, qty, catName } }
+
+    receipts.forEach((receipt) => {
+      totalRevenue += receipt.total_money || 0;
+      const items = receipt.line_items || [];
+      items.forEach((item) => {
+        const qty = item.quantity || 1;
+        const name = item.item_name || "Unknown Item";
+        const itemId = item.item_id;
+        totalItemsSold += qty;
+
+        const catId = itemCategoryMap[itemId];
+        const catName =
+          catId && categoryMap[catId] ? categoryMap[catId] : "ไม่มีหมวดหมู่";
+
+        if (!itemStats[itemId]) {
+          itemStats[itemId] = { name: name, qty: 0, catName: catName };
+        }
+        itemStats[itemId].qty += qty;
+      });
+    });
+
+    // Group by Category
+    const groupedItems = {};
+    Object.values(itemStats).forEach((stat) => {
+      if (!groupedItems[stat.catName]) groupedItems[stat.catName] = [];
+      groupedItems[stat.catName].push(stat);
+    });
+
+    // Format lines for Discord
+    const formattedLines = [];
+    const sortedCats = Object.keys(groupedItems).sort();
+    sortedCats.forEach((cat) => {
+      formattedLines.push(`**📂 ${cat}**\n`);
+      const itemsInCat = groupedItems[cat].sort((a, b) => b.qty - a.qty);
+      itemsInCat.forEach((i) => {
+        formattedLines.push(`- ${i.name}: ${i.qty} ชิ้น\n`);
+      });
+      formattedLines.push(`\n`);
+    });
+
+    // For Chart: overall top 10 items
+    const allItemsArray = Object.values(itemStats).sort(
+      (a, b) => b.qty - a.qty
+    );
+
+    // -------------------------
+    // Monthly Target Progress
+    // -------------------------
+    const MONTHLY_TARGET = 100000; // Default target 100,000 THB
+    // Ensure progress is between 0 and 100
+    let progressPercentage = Math.max(
+      0,
+      Math.min(Math.round((totalRevenue / MONTHLY_TARGET) * 100), 100)
+    );
+    let filledBars = Math.floor(progressPercentage / 10);
+    let emptyBars = Math.max(0, 10 - filledBars);
+    let progressBar = `[${"█".repeat(filledBars)}${"░".repeat(
+      emptyBars
+    )}] ${progressPercentage}%`;
+    let targetText = `เป้าหมาย: ฿${MONTHLY_TARGET.toLocaleString()} \n`;
+    if (totalRevenue >= MONTHLY_TARGET) {
+      targetText += `🎉 ยินดีด้วย! ยอดขายทะลุเป้าหมายแล้ว!`;
+    } else {
+      let remaining = MONTHLY_TARGET - totalRevenue;
+      targetText += `(ขาดอีก ฿${remaining.toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })} จะถึงเป้า)`;
+    }
+
+    const title = `📅 สรุปยอดขายประจำเดือน - ${targetDate.toFormat("MM/yyyy")}`;
+    const descriptionPrefix = `**เป้าหมายยอดขายประจำเดือน 🎯**\n${progressBar}\n${targetText}\n\n**สรุปรายการสินค้าที่ขายได้ตลอดทั้งเดือน:**`;
+    const fields = [
+      {
+        name: "ยอดขายรวม (Total Revenue)",
+        value: `฿${totalRevenue.toFixed(2)}`,
+        inline: true,
+      },
+      {
+        name: "จำนวนบิล (Receipts)",
+        value: `${totalReceipts} บิล`,
+        inline: true,
+      },
+      {
+        name: "รวมจำนวนชิ้น (Items)",
+        value: `${totalItemsSold} ชิ้น`,
+        inline: true,
+      },
+    ];
+
+    // Generate Bar Chart URL for top 10 items
+    let chartUrl = null;
+    if (allItemsArray.length > 0) {
+      const topItems = allItemsArray.slice(0, 10);
+      const chartConfig = {
+        type: "bar",
+        data: {
+          labels: topItems.map((i) =>
+            i.name.length > 15 ? i.name.substring(0, 15) + "..." : i.name
+          ), // Truncate long names
+          datasets: [
+            {
+              label: "ขายได้ (ชิ้น)",
+              data: topItems.map((i) => i.qty),
+              backgroundColor: "rgba(54, 162, 235, 0.6)",
+              borderColor: "rgb(54, 162, 235)",
+              borderWidth: 1,
+            },
+          ],
+        },
+        options: {
+          plugins: {
+            legend: { display: false },
+            title: { display: true, text: "Top 10 สินค้าขายดีประจำเดือน" },
+          },
+        },
+      };
+      chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(
+        JSON.stringify(chartConfig)
+      )}`;
+    }
+
+    await sendSummaryToDiscord(
+      title,
+      0x3498db,
+      descriptionPrefix,
+      formattedLines,
+      fields,
+      chartUrl
+    );
+  } catch (error) {
+    console.error("Error generating monthly summary:", error.message);
   }
 }
 
