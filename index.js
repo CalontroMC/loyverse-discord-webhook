@@ -19,6 +19,9 @@ app.use(express.json({
     }
 }));
 
+// Store recently processed receipt numbers to prevent duplicate notifications
+const processedReceipts = new Map();
+
 // Webhook endpoint for real-time events
 app.post('/webhook/loyverse', async (req, res) => {
     try {
@@ -52,6 +55,24 @@ app.post('/webhook/loyverse', async (req, res) => {
                 const receipts = data.receipts || [data];
                 
                 for (const receipt of receipts) {
+                    const receiptNum = receipt.receipt_number;
+                    
+                    // Deduplication logic
+                    if (receiptNum) {
+                        if (processedReceipts.has(receiptNum)) {
+                            console.log(`Skipping duplicate webhook for receipt: ${receiptNum}`);
+                            continue;
+                        }
+                        processedReceipts.set(receiptNum, Date.now());
+                        
+                        // Cleanup cache (remove items older than 15 mins)
+                        for (const [key, timestamp] of processedReceipts.entries()) {
+                            if (Date.now() - timestamp > 15 * 60 * 1000) {
+                                processedReceipts.delete(key);
+                            }
+                        }
+                    }
+
                     const total = receipt.total_money || 0;
                     const items = receipt.line_items || [];
                     const isRefund = (receipt.receipt_type === 'REFUND') || (total < 0);
