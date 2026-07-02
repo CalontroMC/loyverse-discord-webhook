@@ -37,78 +37,87 @@ app.post('/webhook/loyverse', async (req, res) => {
             // In a strict environment, you would return 401 here.
         }
 
+        // 2. Respond immediately to Loyverse to prevent webhook timeouts
+        res.status(200).send('Webhook received and processing in background');
+
         const data = req.body || {};
         console.log('Received webhook data:', JSON.stringify(data, null, 2));
 
-        // 2. Identify the type of event and create a Discord embed message
-        let embed = {};
+        // 3. Process the event in the background (Async)
+        (async () => {
+            let embed = {};
 
-        // If it looks like a receipt
-        if (data.receipt_number || data.receipts) {
-            const receipts = data.receipts || [data];
-            
-            for (const receipt of receipts) {
-                const total = receipt.total_money || 0;
-                const items = receipt.line_items || [];
+            // If it looks like a receipt
+            if (data.receipt_number || data.receipts) {
+                const receipts = data.receipts || [data];
                 
-                // Format the items list
-                let itemsDescription = items.map(item => {
-                    return `- **${item.quantity || 1}x ${item.item_name || 'Unknown Item'}** (฿${item.total_money || 0})`;
-                }).join('\n');
+                for (const receipt of receipts) {
+                    const total = receipt.total_money || 0;
+                    const items = receipt.line_items || [];
+                    
+                    // Format the items list
+                    let itemsDescription = items.map(item => {
+                        return `- **${item.quantity || 1}x ${item.item_name || 'Unknown Item'}** (฿${item.total_money || 0})`;
+                    }).join('\n');
 
-                if (itemsDescription.length === 0) {
-                    itemsDescription = 'No items found in receipt.';
+                    if (itemsDescription.length === 0) {
+                        itemsDescription = 'No items found in receipt.';
+                    }
+
+                    embed = {
+                        title: `🧾 New Receipt: #${receipt.receipt_number || 'N/A'}`,
+                        color: 0x00FF00, // Green
+                        description: `A new order has been completed!\n\n**Items:**\n${itemsDescription}`,
+                        fields: [
+                            {
+                                name: 'Total Amount',
+                                value: `฿${total}`,
+                                inline: true
+                            }
+                        ],
+                        timestamp: receipt.created_at || new Date().toISOString()
+                    };
+
+                    await sendToDiscord(embed);
                 }
+            } 
+            // If it looks like an inventory update
+            else if (data.inventory || data.items) {
+                 const updates = data.inventory || data.items || [];
+                 let stockChanges = updates.map(update => {
+                     return `- ${update.item_name || 'Item ID ' + update.item_id}: In Stock = **${update.in_stock || 0}**`;
+                 }).join('\n');
 
-                embed = {
-                    title: `🧾 New Receipt: #${receipt.receipt_number || 'N/A'}`,
-                    color: 0x00FF00, // Green
-                    description: `A new order has been completed!\n\n**Items:**\n${itemsDescription}`,
-                    fields: [
-                        {
-                            name: 'Total Amount',
-                            value: `฿${total}`,
-                            inline: true
-                        }
-                    ],
-                    timestamp: receipt.created_at || new Date().toISOString()
-                };
-
-                await sendToDiscord(embed);
+                 if (updates.length > 0) {
+                     embed = {
+                         title: `📦 Inventory Update`,
+                         color: 0xFFA500, // Orange
+                         description: `Stock levels have been updated.\n\n${stockChanges}`,
+                         timestamp: new Date().toISOString()
+                     };
+                     await sendToDiscord(embed);
+                 }
             }
-        } 
-        // If it looks like an inventory update
-        else if (data.inventory || data.items) {
-             const updates = data.inventory || data.items || [];
-             let stockChanges = updates.map(update => {
-                 return `- ${update.item_name || 'Item ID ' + update.item_id}: In Stock = **${update.in_stock || 0}**`;
-             }).join('\n');
-
-             if (updates.length > 0) {
+            else {
+                 // Generic fallback
                  embed = {
-                     title: `📦 Inventory Update`,
-                     color: 0xFFA500, // Orange
-                     description: `Stock levels have been updated.\n\n${stockChanges}`,
+                     title: `🔔 Loyverse Notification`,
+                     color: 0x3498DB, // Blue
+                     description: 'Received an unknown event type.',
                      timestamp: new Date().toISOString()
                  };
                  await sendToDiscord(embed);
-             }
-        }
-        else {
-             // Generic fallback
-             embed = {
-                 title: `🔔 Loyverse Notification`,
-                 color: 0x3498DB, // Blue
-                 description: 'Received an unknown event type.',
-                 timestamp: new Date().toISOString()
-             };
-             await sendToDiscord(embed);
-        }
+            }
+        })().catch(err => {
+            console.error('Error in background processing:', err);
+        });
 
-        res.status(200).send('Webhook received and processed');
     } catch (error) {
         console.error('Error processing webhook:', error);
-        res.status(500).send('Internal Server Error');
+        // Only send error if we haven't already sent a response
+        if (!res.headersSent) {
+            res.status(500).send('Internal Server Error');
+        }
     }
 });
 
