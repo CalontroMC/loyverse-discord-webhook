@@ -214,15 +214,14 @@ async function sendToDiscord(embed) {
 // Daily Summary Cron Job
 // ------------------------------------------------------------------
 
-async function sendSummaryToDiscord(title, color, descriptionPrefix, sortedItems, fields, imageUrl = null) {
+async function sendSummaryToDiscord(title, color, descriptionPrefix, formattedLines, fields, imageUrl = null) {
     const MAX_EMBED_DESC = 3000;
     
-    // Chunk the sortedItems into strings of max 3000 chars
+    // Chunk the formattedLines into strings of max 3000 chars
     let chunks = [];
     let currentChunk = "";
     
-    sortedItems.forEach(([name, qty]) => {
-        const line = `- ${name}: ${qty} ชิ้น\n`;
+    formattedLines.forEach((line) => {
         if (currentChunk.length + line.length > MAX_EMBED_DESC) {
             chunks.push(currentChunk);
             currentChunk = line;
@@ -337,11 +336,60 @@ async function fetchAllShifts(startIso, endIso) {
 
         if (response.data.cursor) {
             cursor = response.data.cursor;
-        } else {
-            hasMore = false;
-        }
     }
     return allShifts;
+}
+
+async function fetchAllCategories() {
+    let allCategories = [];
+    let cursor = null;
+    let hasMore = true;
+
+    while (hasMore) {
+        const params = { limit: 250 };
+        if (cursor) params.cursor = cursor;
+
+        const response = await axios.get('https://api.loyverse.com/v1.0/categories', {
+            params: params,
+            headers: { 'Authorization': `Bearer ${LOYVERSE_ACCESS_TOKEN}` }
+        });
+
+        const categories = response.data.categories || [];
+        allCategories = allCategories.concat(categories);
+
+        if (response.data.cursor) cursor = response.data.cursor;
+        else hasMore = false;
+    }
+    
+    const categoryMap = {};
+    allCategories.forEach(c => categoryMap[c.id] = c.name);
+    return categoryMap;
+}
+
+async function fetchAllItems() {
+    let allItems = [];
+    let cursor = null;
+    let hasMore = true;
+
+    while (hasMore) {
+        const params = { limit: 250 };
+        if (cursor) params.cursor = cursor;
+
+        const response = await axios.get('https://api.loyverse.com/v1.0/items', {
+            params: params,
+            headers: { 'Authorization': `Bearer ${LOYVERSE_ACCESS_TOKEN}` }
+        });
+
+        const items = response.data.items || [];
+        allItems = allItems.concat(items);
+
+        if (response.data.cursor) cursor = response.data.cursor;
+        else hasMore = false;
+    }
+    
+    const itemCategoryMap = {};
+    allItems.forEach(i => itemCategoryMap[i.id] = i.category_id);
+    return itemCategoryMap;
 }
 
 async function sendMonthlySummary(monthString) {
@@ -362,11 +410,13 @@ async function sendMonthlySummary(monthString) {
 
         console.log(`Fetching monthly receipts from ${startOfMonth} to ${endOfMonth}`);
         const receipts = await fetchAllReceipts(startOfMonth, endOfMonth);
+        const categoryMap = await fetchAllCategories();
+        const itemCategoryMap = await fetchAllItems();
 
         let totalRevenue = 0;
         let totalReceipts = receipts.length;
         let totalItemsSold = 0;
-        let itemCounts = {};
+        let itemStats = {}; // { [itemId]: { name, qty, catName } }
         
         receipts.forEach(receipt => {
             totalRevenue += (receipt.total_money || 0);
@@ -374,17 +424,41 @@ async function sendMonthlySummary(monthString) {
             items.forEach(item => {
                 const qty = item.quantity || 1;
                 const name = item.item_name || 'Unknown Item';
+                const itemId = item.item_id;
                 totalItemsSold += qty;
                 
-                if (itemCounts[name]) {
-                    itemCounts[name] += qty;
-                } else {
-                    itemCounts[name] = qty;
+                const catId = itemCategoryMap[itemId];
+                const catName = (catId && categoryMap[catId]) ? categoryMap[catId] : 'ไม่มีหมวดหมู่';
+
+                if (!itemStats[itemId]) {
+                    itemStats[itemId] = { name: name, qty: 0, catName: catName };
                 }
+                itemStats[itemId].qty += qty;
             });
         });
 
-        const sortedItems = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]);
+        // Group by Category
+        const groupedItems = {};
+        Object.values(itemStats).forEach(stat => {
+            if (!groupedItems[stat.catName]) groupedItems[stat.catName] = [];
+            groupedItems[stat.catName].push(stat);
+        });
+
+        // Format lines for Discord
+        const formattedLines = [];
+        const sortedCats = Object.keys(groupedItems).sort();
+        sortedCats.forEach(cat => {
+            formattedLines.push(`**📂 ${cat}**\n`);
+            const itemsInCat = groupedItems[cat].sort((a, b) => b.qty - a.qty);
+            itemsInCat.forEach(i => {
+                formattedLines.push(`- ${i.name}: ${i.qty} ชิ้น\n`);
+            });
+            formattedLines.push(`\n`);
+        });
+
+        // For Chart: overall top 10 items
+        const allItemsArray = Object.values(itemStats).sort((a, b) => b.qty - a.qty);
+
         // -------------------------
         // Monthly Target Progress
         // -------------------------
@@ -424,15 +498,15 @@ async function sendMonthlySummary(monthString) {
         
         // Generate Bar Chart URL for top 10 items
         let chartUrl = null;
-        if (sortedItems.length > 0) {
-            const topItems = sortedItems.slice(0, 10);
+        if (allItemsArray.length > 0) {
+            const topItems = allItemsArray.slice(0, 10);
             const chartConfig = {
                 type: 'bar',
                 data: {
-                    labels: topItems.map(i => i[0].length > 15 ? i[0].substring(0, 15) + '...' : i[0]), // Truncate long names
+                    labels: topItems.map(i => i.name.length > 15 ? i.name.substring(0, 15) + '...' : i.name), // Truncate long names
                     datasets: [{
                         label: 'ขายได้ (ชิ้น)',
-                        data: topItems.map(i => i[1]),
+                        data: topItems.map(i => i.qty),
                         backgroundColor: 'rgba(54, 162, 235, 0.6)',
                         borderColor: 'rgb(54, 162, 235)',
                         borderWidth: 1
@@ -448,7 +522,7 @@ async function sendMonthlySummary(monthString) {
             chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
         }
 
-        await sendSummaryToDiscord(title, 0x3498DB, descriptionPrefix, sortedItems, fields, chartUrl);
+        await sendSummaryToDiscord(title, 0x3498DB, descriptionPrefix, formattedLines, fields, chartUrl);
 
     } catch (error) {
         console.error('Error generating monthly summary:', error.message);
@@ -478,11 +552,14 @@ async function sendDailySummary(dateString = null) {
         
         console.log(`Fetching shifts from ${startOfDay} to ${endOfDay}`);
         const shifts = await fetchAllShifts(startOfDay, endOfDay);
+
+        const categoryMap = await fetchAllCategories();
+        const itemCategoryMap = await fetchAllItems();
         
         let totalRevenue = 0;
         let totalReceipts = receipts.length;
         let totalItemsSold = 0;
-        let itemCounts = {};
+        let itemStats = {};
         
         receipts.forEach(receipt => {
             totalRevenue += (receipt.total_money || 0);
@@ -490,15 +567,40 @@ async function sendDailySummary(dateString = null) {
             items.forEach(item => {
                 const qty = item.quantity || 1;
                 const name = item.item_name || 'Unknown Item';
+                const itemId = item.item_id;
                 totalItemsSold += qty;
                 
-                if (itemCounts[name]) {
-                    itemCounts[name] += qty;
-                } else {
-                    itemCounts[name] = qty;
+                const catId = itemCategoryMap[itemId];
+                const catName = (catId && categoryMap[catId]) ? categoryMap[catId] : 'ไม่มีหมวดหมู่';
+
+                if (!itemStats[itemId]) {
+                    itemStats[itemId] = { name: name, qty: 0, catName: catName };
                 }
+                itemStats[itemId].qty += qty;
             });
         });
+
+        // Group by Category
+        const groupedItems = {};
+        Object.values(itemStats).forEach(stat => {
+            if (!groupedItems[stat.catName]) groupedItems[stat.catName] = [];
+            groupedItems[stat.catName].push(stat);
+        });
+
+        // Format lines for Discord
+        const formattedLines = [];
+        const sortedCats = Object.keys(groupedItems).sort();
+        sortedCats.forEach(cat => {
+            formattedLines.push(`**📂 ${cat}**\n`);
+            const itemsInCat = groupedItems[cat].sort((a, b) => b.qty - a.qty);
+            itemsInCat.forEach(i => {
+                formattedLines.push(`- ${i.name}: ${i.qty} ชิ้น\n`);
+            });
+            formattedLines.push(`\n`);
+        });
+
+        // For Chart: overall top 10 items
+        const allItemsArray = Object.values(itemStats).sort((a, b) => b.qty - a.qty);
 
         // Calculate cash management data from shifts
         let totalOpeningCash = 0;
@@ -515,7 +617,6 @@ async function sendDailySummary(dateString = null) {
             totalActualCash += (shift.actual_amount || 0);
         });
 
-        const sortedItems = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]);
         const title = `📊 สรุปยอดขายและเงินสดประจำวัน - ${targetDate.toFormat('dd/MM/yyyy')}`;
         const descriptionPrefix = `**รายการสินค้าที่ขายได้วันนี้:**`;
         const fields = [
@@ -568,15 +669,15 @@ async function sendDailySummary(dateString = null) {
         
         // Generate Bar Chart URL for top 10 items
         let chartUrl = null;
-        if (sortedItems.length > 0) {
-            const topItems = sortedItems.slice(0, 10);
+        if (allItemsArray.length > 0) {
+            const topItems = allItemsArray.slice(0, 10);
             const chartConfig = {
                 type: 'bar',
                 data: {
-                    labels: topItems.map(i => i[0].length > 15 ? i[0].substring(0, 15) + '...' : i[0]),
+                    labels: topItems.map(i => i.name.length > 15 ? i.name.substring(0, 15) + '...' : i.name),
                     datasets: [{
                         label: 'ขายได้ (ชิ้น)',
-                        data: topItems.map(i => i[1]),
+                        data: topItems.map(i => i.qty),
                         backgroundColor: 'rgba(155, 89, 182, 0.6)', // Purple to match embed color
                         borderColor: 'rgb(155, 89, 182)',
                         borderWidth: 1
@@ -592,7 +693,7 @@ async function sendDailySummary(dateString = null) {
             chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
         }
 
-        await sendSummaryToDiscord(title, 0x9B59B6, descriptionPrefix, sortedItems, fields, chartUrl);
+        await sendSummaryToDiscord(title, 0x9B59B6, descriptionPrefix, formattedLines, fields, chartUrl);
         console.log('Daily summary sent successfully.');
 
     } catch (error) {
