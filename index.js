@@ -130,6 +130,11 @@ app.get('/monthly', async (req, res) => {
     res.send(`ระบบกำลังดึงข้อมูลสรุปยอดขายของเดือน ${monthParam} (อาจใช้เวลาสักครู่หากมีบิลเยอะ) กรุณารอข้อความเด้งใน Discord ครับ`);
 });
 
+// Endpoint to keep the server awake (for cron-job.org)
+app.get('/ping', (req, res) => {
+    res.status(200).send('Pong!');
+});
+
 // Function to send the message to Discord
 async function sendToDiscord(embed) {
     if (!DISCORD_WEBHOOK_URL) {
@@ -253,6 +258,40 @@ async function fetchAllReceipts(startIso, endIso) {
     return allReceipts;
 }
 
+async function fetchAllShifts(startIso, endIso) {
+    let allShifts = [];
+    let cursor = null;
+    let hasMore = true;
+
+    while (hasMore) {
+        const params = {
+            opened_at_min: startIso,
+            opened_at_max: endIso,
+            limit: 250
+        };
+        if (cursor) {
+            params.cursor = cursor;
+        }
+
+        const response = await axios.get('https://api.loyverse.com/v1.0/shifts', {
+            params: params,
+            headers: {
+                'Authorization': `Bearer ${LOYVERSE_ACCESS_TOKEN}`
+            }
+        });
+
+        const shifts = response.data.shifts || [];
+        allShifts = allShifts.concat(shifts);
+
+        if (response.data.cursor) {
+            cursor = response.data.cursor;
+        } else {
+            hasMore = false;
+        }
+    }
+    return allShifts;
+}
+
 async function sendMonthlySummary(monthString) {
     try {
         if (!LOYVERSE_ACCESS_TOKEN) {
@@ -342,6 +381,9 @@ async function sendDailySummary(dateString = null) {
         console.log(`Fetching receipts from ${startOfDay} to ${endOfDay}`);
         const receipts = await fetchAllReceipts(startOfDay, endOfDay);
         
+        console.log(`Fetching shifts from ${startOfDay} to ${endOfDay}`);
+        const shifts = await fetchAllShifts(startOfDay, endOfDay);
+        
         let totalRevenue = 0;
         let totalReceipts = receipts.length;
         let totalItemsSold = 0;
@@ -363,23 +405,68 @@ async function sendDailySummary(dateString = null) {
             });
         });
 
+        // Calculate cash management data from shifts
+        let totalOpeningCash = 0;
+        let totalPayIns = 0;
+        let totalPayOuts = 0;
+        let totalExpectedCash = 0;
+        let totalActualCash = 0;
+
+        shifts.forEach(shift => {
+            totalOpeningCash += (shift.opening_amount || 0);
+            totalPayIns += (shift.pay_ins || 0);
+            totalPayOuts += (shift.pay_outs || 0);
+            totalExpectedCash += (shift.expected_amount || 0);
+            totalActualCash += (shift.actual_amount || 0);
+        });
+
         const sortedItems = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]);
-        const title = `📊 สรุปยอดขายประจำวัน - ${targetDate.toFormat('dd/MM/yyyy')}`;
+        const title = `📊 สรุปยอดขายและเงินสดประจำวัน - ${targetDate.toFormat('dd/MM/yyyy')}`;
         const descriptionPrefix = `**รายการสินค้าที่ขายได้วันนี้:**`;
         const fields = [
             {
-                name: 'ยอดขายรวม (Total Revenue)',
+                name: 'ยอดขายรวม',
                 value: `฿${totalRevenue.toFixed(2)}`,
                 inline: true
             },
             {
-                name: 'จำนวนบิล (Receipts)',
+                name: 'จำนวนบิล',
                 value: `${totalReceipts} บิล`,
                 inline: true
             },
             {
-                name: 'รวมจำนวนชิ้น (Items)',
+                name: 'รวมจำนวนชิ้น',
                 value: `${totalItemsSold} ชิ้น`,
+                inline: true
+            },
+            {
+                name: 'เงินทอนเริ่มต้น',
+                value: `฿${totalOpeningCash.toFixed(2)}`,
+                inline: true
+            },
+            {
+                name: 'นำเงินเข้า (Pay In)',
+                value: `฿${totalPayIns.toFixed(2)}`,
+                inline: true
+            },
+            {
+                name: 'นำเงินออก (Pay Out)',
+                value: `฿${totalPayOuts.toFixed(2)}`,
+                inline: true
+            },
+            {
+                name: 'เงินสดที่คาดหวัง',
+                value: `฿${totalExpectedCash.toFixed(2)}`,
+                inline: true
+            },
+            {
+                name: 'เงินสดตรวจนับจริง',
+                value: `฿${totalActualCash.toFixed(2)}`,
+                inline: true
+            },
+            {
+                name: 'ส่วนต่างเงินสด',
+                value: `฿${(totalActualCash - totalExpectedCash).toFixed(2)}`,
                 inline: true
             }
         ];
