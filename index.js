@@ -5,6 +5,24 @@ const cron = require("node-cron");
 const axios = require("axios");
 const { DateTime } = require("luxon");
 
+const { GoogleSpreadsheet } = require("google-spreadsheet");
+const { JWT } = require("google-auth-library");
+
+const GOOGLE_SERVICE_ACCOUNT_EMAIL = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY
+  ? process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n")
+  : null;
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
+
+let googleServiceAccountAuth = null;
+if (GOOGLE_SERVICE_ACCOUNT_EMAIL && GOOGLE_PRIVATE_KEY) {
+  googleServiceAccountAuth = new JWT({
+    email: GOOGLE_SERVICE_ACCOUNT_EMAIL,
+    key: GOOGLE_PRIVATE_KEY,
+    scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+  });
+}
+
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -87,6 +105,9 @@ app.post("/webhook/loyverse", async (req, res) => {
           const isRefund = receipt.receipt_type === "REFUND" || total < 0;
           const totalDiscount = receipt.total_discount || 0;
           const payments = receipt.payments || [];
+
+          // Send to Google Sheets (Fire and forget)
+          appendReceiptToGoogleSheet(receipt).catch((e) => console.error(e));
 
           // Format the items list
           let itemsDescription = items
@@ -210,6 +231,79 @@ app.get("/monthly", async (req, res) => {
 app.get("/ping", (req, res) => {
   res.status(200).send("Pong!");
 });
+
+// Cached Data for Webhooks
+let cachedCategories = null;
+let cachedItems = null;
+let lastCacheUpdate = 0;
+
+async function getCachedMaps() {
+  if (
+    !cachedCategories ||
+    !cachedItems ||
+    Date.now() - lastCacheUpdate > 60 * 60 * 1000
+  ) {
+    cachedCategories = await fetchAllCategories();
+    cachedItems = await fetchAllItems();
+    lastCacheUpdate = Date.now();
+  }
+  return { categories: cachedCategories, items: cachedItems };
+}
+
+async function appendReceiptToGoogleSheet(receipt) {
+  if (!GOOGLE_SHEET_ID || !googleServiceAccountAuth) return;
+  try {
+    const doc = new GoogleSpreadsheet(
+      GOOGLE_SHEET_ID,
+      googleServiceAccountAuth
+    );
+    await doc.loadInfo();
+    const sheet = doc.sheetsByIndex[0];
+
+    const rowsToAdd = [];
+    const dateStr = DateTime.fromISO(receipt.created_at, {
+      zone: "Asia/Bangkok",
+    }).toFormat("yyyy-MM-dd HH:mm:ss");
+    const receiptNum = receipt.receipt_number || "-";
+    const totalDiscount = receipt.total_discount || 0;
+
+    const paymentMethod =
+      receipt.payments && receipt.payments.length > 0
+        ? receipt.payments[0].name
+        : "-";
+
+    const itemsSold = receipt.line_items || [];
+
+    // Fetch cached category map
+    const { categories, items } = await getCachedMaps();
+
+    for (const item of itemsSold) {
+      const catId = items[item.item_id];
+      const catName = categories[catId] || "Uncategorized";
+
+      rowsToAdd.push([
+        dateStr,
+        receiptNum,
+        catName, // Category
+        item.item_name || "Unknown Item", // Item Name
+        item.quantity || 1, // Quantity
+        item.total_money / (item.quantity || 1) || 0, // Price
+        item.total_money || 0, // Total Price
+        item.total_discount || totalDiscount, // Discount
+        paymentMethod, // Payment Method
+      ]);
+    }
+
+    if (rowsToAdd.length > 0) {
+      await sheet.addRows(rowsToAdd);
+      console.log(
+        `Appended ${rowsToAdd.length} rows to Google Sheet for receipt ${receiptNum}`
+      );
+    }
+  } catch (e) {
+    console.error("Error appending to Google Sheet:", e.message);
+  }
+}
 
 // Function to send the message to Discord
 async function sendToDiscord(embed) {
