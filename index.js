@@ -14,6 +14,7 @@ const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY
   : null;
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
+let lastSheetError = null;
 let googleServiceAccountAuth = null;
 if (GOOGLE_SERVICE_ACCOUNT_EMAIL && GOOGLE_PRIVATE_KEY) {
   googleServiceAccountAuth = new JWT({
@@ -227,6 +228,16 @@ app.get("/monthly", async (req, res) => {
 });
 
 // Endpoint to keep the server awake (for cron-job.org)
+
+// Expose debug endpoint
+app.get("/debug-sheet", (req, res) => {
+  res.json({
+    hasAuth: !!googleServiceAccountAuth,
+    sheetId: GOOGLE_SHEET_ID,
+    lastError: lastSheetError,
+  });
+});
+
 app.get("/ping", (req, res) => {
   res.status(200).send("Pong!");
 });
@@ -278,7 +289,8 @@ async function appendDailySummaryToGoogleSheet(summaryData) {
     await sheet.addRow(row);
     console.log("Successfully appended daily summary to Google Sheets.");
   } catch (e) {
-    console.error("Error appending to Google Sheet:", e.message);
+    lastSheetError = e.message;
+    console.error("Error appending to Google Sheet:", e.stack);
   }
 }
 
