@@ -880,6 +880,22 @@ async function sendDailySummary(dateString = null) {
       chartUrl
     );
     console.log("Daily summary sent successfully.");
+
+    // Append to Google Sheets
+    await appendDailySummaryToGoogleSheet({
+      dateStr: targetDate.toFormat("yyyy-MM-dd"),
+      totalRevenue,
+      totalReceipts,
+      totalItemsSold,
+      totalOpeningCash,
+      totalPayIns,
+      totalPayOuts,
+      totalExpectedCash,
+      totalActualCash,
+      difference: totalActualCash - totalExpectedCash,
+      groupedItems,
+      allItemsArray
+    });
   } catch (error) {
     console.error("Error fetching daily summary:", error.message);
     if (error.response) {
