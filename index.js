@@ -894,7 +894,7 @@ async function sendDailySummary(dateString = null) {
       totalActualCash,
       difference: totalActualCash - totalExpectedCash,
       groupedItems,
-      allItemsArray
+      allItemsArray,
     });
   } catch (error) {
     console.error("Error fetching daily summary:", error.message);
