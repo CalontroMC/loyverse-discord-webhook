@@ -775,9 +775,15 @@ async function sendDailySummary(dateString = null) {
           catId && categoryMap[catId] ? categoryMap[catId] : "ไม่มีหมวดหมู่";
 
         if (!itemStats[itemId]) {
-          itemStats[itemId] = { name: name, qty: 0, catName: catName };
+          itemStats[itemId] = {
+            name: name,
+            qty: 0,
+            money: 0,
+            catName: catName,
+          };
         }
         itemStats[itemId].qty += qty;
+        itemStats[itemId].money += item.total_money || 0;
       });
     });
 
