@@ -271,23 +271,56 @@ async function appendDailySummaryToGoogleSheet(summaryData) {
       googleServiceAccountAuth
     );
     await doc.loadInfo();
-    const sheet = doc.sheetsByIndex[0];
 
-    const row = [
-      summaryData.dateStr,
-      summaryData.totalRevenue,
-      summaryData.totalReceipts,
-      summaryData.totalItemsSold,
-      summaryData.totalOpeningCash,
-      summaryData.totalPayIns,
-      summaryData.totalPayOuts,
-      summaryData.totalExpectedCash,
-      summaryData.totalActualCash,
-      summaryData.difference,
+    let sheet = doc.sheetsByTitle[summaryData.dateStr];
+    if (!sheet) {
+      sheet = await doc.addSheet({
+        title: summaryData.dateStr,
+        headerValues: ["หัวข้อ", "ข้อมูล"],
+      });
+    } else {
+      await sheet.clear();
+      await sheet.setHeaderRow(["หัวข้อ", "ข้อมูล"]);
+    }
+
+    const rowsToAdd = [
+      ["วันที่", summaryData.dateStr],
+      ["ยอดขายรวม", summaryData.totalRevenue + " บาท"],
+      ["จำนวนบิล", summaryData.totalReceipts + " บิล"],
+      ["จำนวนสินค้าที่ขาย", summaryData.totalItemsSold + " ชิ้น"],
+      ["เงินทอนเริ่มต้น", summaryData.totalOpeningCash + " บาท"],
+      ["นำเงินเข้า (Pay In)", summaryData.totalPayIns + " บาท"],
+      ["นำเงินออก (Pay Out)", summaryData.totalPayOuts + " บาท"],
+      ["เงินสดที่คาดหวัง", summaryData.totalExpectedCash + " บาท"],
+      ["เงินสดตรวจนับจริง", summaryData.totalActualCash + " บาท"],
+      ["ส่วนต่างเงินสด", summaryData.difference + " บาท"],
+      ["", ""],
+      ["ยอดขายแยกตามหมวดหมู่", ""],
     ];
 
-    await sheet.addRow(row);
-    console.log("Successfully appended daily summary to Google Sheets.");
+    // Add Categories
+    const sortedCats = Object.keys(summaryData.groupedItems).sort();
+    sortedCats.forEach((cat) => {
+      const itemsInCat = summaryData.groupedItems[cat];
+      let catTotalQty = 0;
+      let catTotalMoney = 0;
+      itemsInCat.forEach((i) => {
+        catTotalQty += i.qty;
+        catTotalMoney += i.money;
+      });
+      rowsToAdd.push([cat, `${catTotalMoney} บาท (${catTotalQty} ชิ้น)`]);
+    });
+
+    rowsToAdd.push(["", ""]);
+    rowsToAdd.push(["รายการเมนูที่ขายได้ (เรียงตามยอดขาย)", ""]);
+
+    // Add Top Items
+    summaryData.allItemsArray.forEach((item) => {
+      rowsToAdd.push([item.name, `${item.money} บาท (${item.qty} ชิ้น)`]);
+    });
+
+    await sheet.addRows(rowsToAdd);
+    console.log("Successfully created daily report on Google Sheets.");
   } catch (e) {
     lastSheetError = e.message;
     console.error("Error appending to Google Sheet:", e.stack);
