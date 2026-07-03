@@ -107,7 +107,6 @@ app.post("/webhook/loyverse", async (req, res) => {
           const payments = receipt.payments || [];
 
           // Send to Google Sheets (Fire and forget)
-          appendReceiptToGoogleSheet(receipt).catch((e) => console.error(e));
 
           // Format the items list
           let itemsDescription = items
@@ -250,8 +249,11 @@ async function getCachedMaps() {
   return { categories: cachedCategories, items: cachedItems };
 }
 
-async function appendReceiptToGoogleSheet(receipt) {
-  if (!GOOGLE_SHEET_ID || !googleServiceAccountAuth) return;
+async function appendDailySummaryToGoogleSheet(summaryData) {
+  if (!GOOGLE_SHEET_ID || !googleServiceAccountAuth) {
+    console.log("Google Sheets integration is not fully configured.");
+    return;
+  }
   try {
     const doc = new GoogleSpreadsheet(
       GOOGLE_SHEET_ID,
@@ -260,46 +262,21 @@ async function appendReceiptToGoogleSheet(receipt) {
     await doc.loadInfo();
     const sheet = doc.sheetsByIndex[0];
 
-    const rowsToAdd = [];
-    const dateStr = DateTime.fromISO(receipt.created_at, {
-      zone: "Asia/Bangkok",
-    }).toFormat("yyyy-MM-dd HH:mm:ss");
-    const receiptNum = receipt.receipt_number || "-";
-    const totalDiscount = receipt.total_discount || 0;
+    const row = [
+      summaryData.dateStr,
+      summaryData.totalRevenue,
+      summaryData.totalReceipts,
+      summaryData.totalItemsSold,
+      summaryData.totalOpeningCash,
+      summaryData.totalPayIns,
+      summaryData.totalPayOuts,
+      summaryData.totalExpectedCash,
+      summaryData.totalActualCash,
+      summaryData.difference,
+    ];
 
-    const paymentMethod =
-      receipt.payments && receipt.payments.length > 0
-        ? receipt.payments[0].name
-        : "-";
-
-    const itemsSold = receipt.line_items || [];
-
-    // Fetch cached category map
-    const { categories, items } = await getCachedMaps();
-
-    for (const item of itemsSold) {
-      const catId = items[item.item_id];
-      const catName = categories[catId] || "Uncategorized";
-
-      rowsToAdd.push([
-        dateStr,
-        receiptNum,
-        catName, // Category
-        item.item_name || "Unknown Item", // Item Name
-        item.quantity || 1, // Quantity
-        item.total_money / (item.quantity || 1) || 0, // Price
-        item.total_money || 0, // Total Price
-        item.total_discount || totalDiscount, // Discount
-        paymentMethod, // Payment Method
-      ]);
-    }
-
-    if (rowsToAdd.length > 0) {
-      await sheet.addRows(rowsToAdd);
-      console.log(
-        `Appended ${rowsToAdd.length} rows to Google Sheet for receipt ${receiptNum}`
-      );
-    }
+    await sheet.addRow(row);
+    console.log("Successfully appended daily summary to Google Sheets.");
   } catch (e) {
     console.error("Error appending to Google Sheet:", e.message);
   }
