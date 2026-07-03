@@ -558,9 +558,15 @@ async function sendMonthlySummary(monthString) {
           catId && categoryMap[catId] ? categoryMap[catId] : "ไม่มีหมวดหมู่";
 
         if (!itemStats[itemId]) {
-          itemStats[itemId] = { name: name, qty: 0, catName: catName };
+          itemStats[itemId] = {
+            name: name,
+            qty: 0,
+            money: 0,
+            catName: catName,
+          };
         }
         itemStats[itemId].qty += qty;
+        itemStats[itemId].money += item.total_money || 0;
       });
     });
 
@@ -583,9 +589,9 @@ async function sendMonthlySummary(monthString) {
       formattedLines.push(`\n`);
     });
 
-    // For Chart: overall top 10 items
+    // For Chart and Sheets: overall items
     const allItemsArray = Object.values(itemStats).sort(
-      (a, b) => b.qty - a.qty
+      (a, b) => b.money - a.money
     );
 
     // -------------------------
