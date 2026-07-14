@@ -95,6 +95,44 @@ test("renders Discord lines and three-column Sheets rows", () => {
   ]);
 });
 
+test("escapes formula-like reasons only in Sheets rows", () => {
+  const entries = ["=SUM(A1:A2)", "+cmd", "-10", "@mention"].map(
+    (reason) => ({
+      createdAt: "2026-07-14T08:30:00.000Z",
+      time: "15:30",
+      amount: 500,
+      reason,
+    })
+  );
+
+  assert.deepEqual(
+    buildPayOutSheetRows(entries).map((row) => row[2]),
+    ["'=SUM(A1:A2)", "'+cmd", "'-10", "'@mention"]
+  );
+  assert.deepEqual(
+    formatPayOutDiscordLines(entries).map((line) =>
+      line.slice(line.lastIndexOf(" — ") + 3, -1)
+    ),
+    entries.map((entry) => entry.reason)
+  );
+});
+
+test("bounds Discord lines by truncating only an oversized reason", () => {
+  const fixedPrefix = "- 15:30 — ฿500.00 — ";
+  const [line] = formatPayOutDiscordLines([
+    {
+      createdAt: "2026-07-14T08:30:00.000Z",
+      time: "15:30",
+      amount: 500,
+      reason: "ก".repeat(4000),
+    },
+  ]);
+
+  assert.ok(line.length <= 3000);
+  assert.ok(line.startsWith(fixedPrefix));
+  assert.ok(line.endsWith("…\n"));
+});
+
 test("returns empty destination output when there are no Pay Outs", () => {
   assert.deepEqual(extractPayOutDetails([]), []);
   assert.deepEqual(formatPayOutDiscordLines([]), []);
