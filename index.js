@@ -825,11 +825,11 @@ async function sendDailySummary(dateString = null) {
     let totalActualCash = 0;
 
     shifts.forEach((shift) => {
-      totalOpeningCash += shift.opening_amount || 0;
-      totalPayIns += shift.pay_ins || 0;
-      totalPayOuts += shift.pay_outs || 0;
-      totalExpectedCash += shift.expected_amount || 0;
-      totalActualCash += shift.actual_amount || 0;
+      totalOpeningCash += shift.starting_cash || 0;
+      totalPayIns += shift.paid_in || 0;
+      totalPayOuts += shift.paid_out || 0;
+      totalExpectedCash += shift.expected_cash || 0;
+      totalActualCash += shift.actual_cash || 0;
     });
 
     const title = `📊 สรุปยอดขายและเงินสดประจำวัน - ${targetDate.toFormat(
