@@ -424,17 +424,7 @@ async function sendSummaryToDiscord(
 }
 
 // Schedule the task at 23:00 (11 PM) every day in Bangkok time
-cron.schedule(
-  "0 23 * * *",
-  async () => {
-    console.log("Running daily sales summary task (11 PM)...");
-    await sendDailySummary();
-  },
-  {
-    scheduled: true,
-    timezone: "Asia/Bangkok",
-  }
-);
+// Internal cron removed; relying on external cron-job.org triggering /test-summary
 
 async function fetchAllReceipts(startIso, endIso) {
   let allReceipts = [];
