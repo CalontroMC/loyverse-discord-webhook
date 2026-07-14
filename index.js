@@ -4,6 +4,11 @@ const crypto = require("crypto");
 const cron = require("node-cron");
 const axios = require("axios");
 const { DateTime } = require("luxon");
+const {
+  extractPayOutDetails,
+  formatPayOutDiscordLines,
+  buildPayOutSheetRows,
+} = require("./lib/payOutDetails");
 
 const { GoogleSpreadsheet } = require("google-spreadsheet");
 const { JWT } = require("google-auth-library");
@@ -288,15 +293,16 @@ async function appendDailySummaryToGoogleSheet(summaryData) {
     );
     await doc.loadInfo();
 
+    const sheetHeaders = ["หัวข้อ", "ข้อมูล", "เหตุผล"];
     let sheet = doc.sheetsByTitle[summaryData.dateStr];
     if (!sheet) {
       sheet = await doc.addSheet({
         title: summaryData.dateStr,
-        headerValues: ["หัวข้อ", "ข้อมูล"],
+        headerValues: sheetHeaders,
       });
     } else {
       await sheet.clear();
-      await sheet.setHeaderRow(["หัวข้อ", "ข้อมูล"]);
+      await sheet.setHeaderRow(sheetHeaders);
     }
 
     const rowsToAdd = [
@@ -310,9 +316,22 @@ async function appendDailySummaryToGoogleSheet(summaryData) {
       ["เงินสดที่คาดหวัง", summaryData.totalExpectedCash + " บาท"],
       ["เงินสดตรวจนับจริง", summaryData.totalActualCash + " บาท"],
       ["ส่วนต่างเงินสด", summaryData.difference + " บาท"],
-      ["", ""],
-      ["ยอดขายแยกตามหมวดหมู่", ""],
     ];
+
+    const payOutRows = buildPayOutSheetRows(summaryData.payOutDetails || []);
+    if (payOutRows.length > 0) {
+      rowsToAdd.push(
+        ["", "", ""],
+        ["รายละเอียดนำเงินออก (Pay Out)", "", ""],
+        ["เวลา", "จำนวนเงิน", "เหตุผล"],
+        ...payOutRows
+      );
+    }
+
+    rowsToAdd.push(
+      ["", "", ""],
+      ["ยอดขายแยกตามหมวดหมู่", "", ""]
+    );
 
     // Add Categories
     const sortedCats = Object.keys(summaryData.groupedItems).sort();
@@ -764,6 +783,7 @@ async function sendDailySummary(dateString = null) {
 
     console.log(`Fetching shifts from ${startOfDay} to ${endOfDay}`);
     const shifts = await fetchAllShifts(startOfDay, endOfDay);
+    const payOutDetails = extractPayOutDetails(shifts);
 
     const categoryMap = await fetchAllCategories();
     const itemCategoryMap = await fetchAllItems();
@@ -930,6 +950,16 @@ async function sendDailySummary(dateString = null) {
       fields,
       chartUrl
     );
+
+    if (payOutDetails.length > 0) {
+      await sendSummaryToDiscord(
+        "รายละเอียดนำเงินออก (Pay Out)",
+        0xe67e22,
+        "**รายการนำเงินออกประจำวัน:**",
+        formatPayOutDiscordLines(payOutDetails),
+        []
+      );
+    }
     console.log("Daily summary sent successfully.");
 
     // Append to Google Sheets
@@ -946,6 +976,7 @@ async function sendDailySummary(dateString = null) {
       difference: totalActualCash - totalExpectedCash,
       groupedItems,
       allItemsArray,
+      payOutDetails,
     });
   } catch (error) {
     console.error("Error fetching daily summary:", error.message);
