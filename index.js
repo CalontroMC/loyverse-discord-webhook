@@ -211,6 +211,22 @@ app.get("/test-summary", async (req, res) => {
   res.send("Summary triggered! Check your Discord.");
 });
 
+// Endpoint to request a summary for a specific date
+app.get("/summary", async (req, res) => {
+  const dateParam = req.query.date;
+  if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+    return res
+      .status(400)
+      .send("กรุณาระบุวันที่ในรูปแบบ YYYY-MM-DD เช่น /summary?date=2026-07-01");
+  }
+
+  // We don't await this so the browser returns immediately
+  sendDailySummary(dateParam).catch((err) => console.error(err));
+  res.send(
+    `ระบบกำลังดึงข้อมูลสรุปยอดขายของวันที่ ${dateParam} (อาจใช้เวลาสักครู่) กรุณารอข้อความเด้งใน Discord ครับ`
+  );
+});
+
 // Endpoint to request a summary for a specific month
 app.get("/monthly", async (req, res) => {
   const monthParam = req.query.month;
