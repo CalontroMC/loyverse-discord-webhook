@@ -507,7 +507,13 @@ async function fetchAllShifts(startIso, endIso) {
       hasMore = false;
     }
   }
-  return allShifts;
+  const startTime = Date.parse(startIso);
+  const endTime = Date.parse(endIso);
+
+  return allShifts.filter((shift) => {
+    const openedAt = Date.parse(shift.opened_at);
+    return openedAt >= startTime && openedAt <= endTime;
+  });
 }
 
 async function fetchAllCategories() {
