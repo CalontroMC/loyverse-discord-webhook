@@ -483,8 +483,8 @@ async function fetchAllShifts(startIso, endIso) {
 
   while (hasMore) {
     const params = {
-      opened_at_min: startIso,
-      opened_at_max: endIso,
+      created_at_min: startIso,
+      created_at_max: endIso,
       limit: 250,
     };
     if (cursor) {
