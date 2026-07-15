@@ -144,3 +144,32 @@ test("malformed numbers do not produce NaN and a normal shift has no embed", () 
   assert.equal(formatShiftAnomalyDiscord(anomalies), null);
   assert.doesNotMatch(JSON.stringify(anomalies), /NaN/);
 });
+
+test("does not report a cash discrepancy when either cash total is malformed", () => {
+  const malformedExpected = detectShiftAnomalies(
+    shift({ expected_cash: "bad", actual_cash: 1000 })
+  );
+  const malformedActual = detectShiftAnomalies(
+    shift({ expected_cash: 1000, actual_cash: "bad" })
+  );
+
+  assert.equal(malformedExpected.discrepancy, null);
+  assert.equal(malformedExpected.hasAnomaly, false);
+  assert.equal(malformedActual.discrepancy, null);
+  assert.equal(malformedActual.hasAnomaly, false);
+});
+
+test("bounds a large anomaly description to Discord's embed limit", () => {
+  const cash_movements = Array.from({ length: 200 }, (_, index) => ({
+    type: "PAY_OUT",
+    money_amount: 1001 + index,
+    comment: `เหตุผล-${index}-${"ย".repeat(100)}`,
+    created_at: "2026-07-15T01:30:00Z",
+  }));
+  const embed = formatShiftAnomalyDiscord(
+    detectShiftAnomalies(shift({ cash_movements }))
+  );
+
+  assert.ok(embed.description.length <= 4096);
+  assert.match(embed.description, /และอีก \d+ รายการ/);
+});
