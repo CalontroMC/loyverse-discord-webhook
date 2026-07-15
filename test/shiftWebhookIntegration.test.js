@@ -83,3 +83,93 @@ test("fetchShiftByIdWithRetry does not retry a permanent 404", async () => {
   );
   assert.equal(attempts, 1);
 });
+
+test("webhook routes shifts.create through full-shift anomaly processing", () => {
+  assert.match(source, /detectShiftAnomalies/);
+  assert.match(source, /formatShiftAnomalyDiscord/);
+  assert.match(source, /data\.type === "shifts\.create"/);
+  assert.match(source, /await handleShiftCreated\(data\)/);
+  assert.match(source, /await fetchShiftByIdWithRetry\(shiftId\)/);
+  assert.match(source, /await sendToDiscord\(embed\)/);
+});
+
+test("shift alerts use a 24 hour recent-ID cache", () => {
+  assert.match(source, /const processedShifts = new Map\(\)/);
+  assert.match(source, /24 \* 60 \* 60 \* 1000/);
+  assert.match(source, /Skipping duplicate shift webhook/);
+});
+
+test("extractShiftId accepts documented and defensive payload shapes", () => {
+  const functionStart = source.indexOf("function extractShiftId");
+  const functionEnd = source.indexOf(
+    "async function handleShiftCreated",
+    functionStart
+  );
+
+  assert.notEqual(functionStart, -1);
+  assert.notEqual(functionEnd, -1);
+
+  const extractShiftId = vm.runInNewContext(
+    `(${source.slice(functionStart, functionEnd).trim()})`
+  );
+
+  assert.equal(
+    extractShiftId({ type: "shifts.create", data: { id: "nested" } }),
+    "nested"
+  );
+  assert.equal(
+    extractShiftId({ type: "shifts.create", shift_id: "shift-id" }),
+    "shift-id"
+  );
+  assert.equal(
+    extractShiftId({ type: "shifts.create", object_id: "object-id" }),
+    "object-id"
+  );
+  assert.equal(extractShiftId({ type: "shifts.create" }), null);
+});
+
+test("duplicate shift events fetch and send at most once", async () => {
+  const functionStart = source.indexOf("function extractShiftId");
+  const functionEnd = source.indexOf(
+    'app.post("/webhook/loyverse"',
+    functionStart
+  );
+
+  assert.notEqual(functionStart, -1);
+  assert.notEqual(functionEnd, -1);
+
+  let fetchCount = 0;
+  let sendCount = 0;
+  const context = vm.createContext({
+    processedShifts: new Map(),
+    SHIFT_DEDUP_TTL_MS: 24 * 60 * 60 * 1000,
+    console: { log() {}, error() {} },
+    fetchShiftByIdWithRetry: async () => {
+      fetchCount += 1;
+      return {
+        expected_cash: 100,
+        actual_cash: 99,
+        cash_movements: [],
+      };
+    },
+    detectShiftAnomalies: () => ({ hasAnomaly: true }),
+    formatShiftAnomalyDiscord: () => ({ title: "alert" }),
+    sendToDiscord: async () => {
+      sendCount += 1;
+    },
+  });
+  const handlers = vm.runInContext(
+    `(() => { ${source.slice(
+      functionStart,
+      functionEnd
+    )}; return { handleShiftCreated }; })()`,
+    context
+  );
+
+  const event = { type: "shifts.create", data: { id: "same-shift" } };
+  await handlers.handleShiftCreated(event);
+  await handlers.handleShiftCreated(event);
+
+  assert.equal(fetchCount, 1);
+  assert.equal(sendCount, 1);
+});

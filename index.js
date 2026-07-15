@@ -9,6 +9,10 @@ const {
   formatPayOutDiscordLines,
   buildPayOutSheetRows,
 } = require("./lib/payOutDetails");
+const {
+  detectShiftAnomalies,
+  formatShiftAnomalyDiscord,
+} = require("./lib/shiftAnomalyAlerts");
 
 const { GoogleSpreadsheet } = require("google-spreadsheet");
 const { JWT } = require("google-auth-library");
@@ -47,6 +51,54 @@ app.use(
 
 // Store recently processed receipt numbers to prevent duplicate notifications
 const processedReceipts = new Map();
+const processedShifts = new Map();
+const SHIFT_DEDUP_TTL_MS = 24 * 60 * 60 * 1000;
+
+function extractShiftId(payload) {
+  if (!payload || typeof payload !== "object") return null;
+
+  return (
+    payload.shift_id ||
+    payload.object_id ||
+    (payload.data && (payload.data.id || payload.data.shift_id)) ||
+    null
+  );
+}
+
+async function handleShiftCreated(payload) {
+  const shiftId = extractShiftId(payload);
+  if (!shiftId) {
+    console.error("Cannot process shifts.create webhook without a shift ID");
+    return;
+  }
+
+  const now = Date.now();
+  for (const [cachedId, timestamp] of processedShifts.entries()) {
+    if (now - timestamp > SHIFT_DEDUP_TTL_MS) {
+      processedShifts.delete(cachedId);
+    }
+  }
+
+  if (processedShifts.has(shiftId)) {
+    console.log(`Skipping duplicate shift webhook: ${shiftId}`);
+    return;
+  }
+
+  processedShifts.set(shiftId, now);
+
+  try {
+    const shift = await fetchShiftByIdWithRetry(shiftId);
+    const anomalies = detectShiftAnomalies(shift);
+    const embed = formatShiftAnomalyDiscord(anomalies);
+
+    if (embed) {
+      await sendToDiscord(embed);
+    }
+  } catch (error) {
+    processedShifts.delete(shiftId);
+    console.error(`Error processing closed shift ${shiftId}:`, error.message);
+  }
+}
 
 // Webhook endpoint for real-time events
 app.post("/webhook/loyverse", async (req, res) => {
@@ -79,6 +131,11 @@ app.post("/webhook/loyverse", async (req, res) => {
 
     // 3. Process the event in the background (Async)
     (async () => {
+      if (data.type === "shifts.create") {
+        await handleShiftCreated(data);
+        return;
+      }
+
       let embed = {};
 
       // If it looks like a receipt
