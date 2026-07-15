@@ -495,6 +495,39 @@ async function fetchAllReceipts(startIso, endIso) {
   return allReceipts;
 }
 
+function isTransientShiftFetchError(error) {
+  const status = error && error.response && error.response.status;
+  return !status || status === 429 || status >= 500;
+}
+
+async function fetchShiftByIdWithRetry(shiftId, options = {}) {
+  const axiosClient = options.axiosClient || axios;
+  const maxAttempts = options.maxAttempts || 3;
+  const sleep =
+    options.sleep ||
+    ((milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)));
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await axiosClient.get(
+        `https://api.loyverse.com/v1.0/shifts/${encodeURIComponent(shiftId)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${LOYVERSE_ACCESS_TOKEN}`,
+          },
+        }
+      );
+      return response.data;
+    } catch (error) {
+      if (attempt === maxAttempts || !isTransientShiftFetchError(error)) {
+        throw error;
+      }
+      await sleep(250 * 2 ** (attempt - 1));
+    }
+  }
+}
+
 async function fetchAllShifts(startIso, endIso) {
   let allShifts = [];
   let cursor = null;
