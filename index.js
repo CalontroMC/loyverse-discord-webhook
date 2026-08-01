@@ -847,6 +847,14 @@ async function sendMonthlySummary(monthString) {
     );
   } catch (error) {
     console.error("Error generating monthly summary:", error.message);
+    if (error.response?.data?.errors?.[0]?.code === "PAYMENT_REQUIRED") {
+      await sendToDiscord({
+        title: "⚠️ ระบบแจ้งเตือนจาก Loyverse",
+        color: 0xffcc00, // Yellow
+        description:
+          "Loyverse (แพ็กเกจฟรี) ไม่อนุญาตให้ดึงข้อมูลย้อนหลังเกิน 31 วันครับ\nหากต้องการดึงข้อมูลสรุปรายเดือนของเดือนก่อนหน้า จะต้องกดดึงข้อมูลภายในวันที่ 31 ของเดือนนั้นๆ เท่านั้นครับ",
+      });
+    }
   }
 }
 
