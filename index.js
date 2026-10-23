@@ -308,6 +308,17 @@ app.get("/monthly", async (req, res) => {
 // Endpoint to keep the server awake (for cron-job.org)
 
 // Expose debug endpoint
+app.get("/export-shifts-sheet", async (req, res) => {
+  try {
+    const days = parseInt(req.query.days || "31", 10);
+    const result = await exportShiftsToGoogleSheet(days);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error("Export shifts error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get("/debug-sheet", (req, res) => {
   res.json({
     hasAuth: !!googleServiceAccountAuth,
@@ -420,6 +431,162 @@ async function appendDailySummaryToGoogleSheet(summaryData) {
 }
 
 // Function to send the message to Discord
+async function exportShiftsToGoogleSheet(daysBack = 31) {
+  if (!GOOGLE_SHEET_ID || !googleServiceAccountAuth) {
+    throw new Error("Google Sheets integration is not fully configured.");
+  }
+
+  const doc = new GoogleSpreadsheet(
+    GOOGLE_SHEET_ID,
+    googleServiceAccountAuth
+  );
+  await doc.loadInfo();
+
+  const startIso = DateTime.now()
+    .setZone("Asia/Bangkok")
+    .minus({ days: daysBack })
+    .startOf("day")
+    .toUTC()
+    .toISO();
+  const endIso = DateTime.now()
+    .setZone("Asia/Bangkok")
+    .endOf("day")
+    .toUTC()
+    .toISO();
+
+  let allShifts = [];
+  let cursor = null;
+  do {
+    const params = {
+      created_at_min: startIso,
+      created_at_max: endIso,
+      limit: 250,
+    };
+    if (cursor) params.cursor = cursor;
+    const response = await axios.get("https://api.loyverse.com/v1.0/shifts", {
+      params,
+      headers: { Authorization: "Bearer " + LOYVERSE_ACCESS_TOKEN },
+    });
+    allShifts = allShifts.concat(response.data.shifts || []);
+    cursor = response.data.cursor;
+  } while (cursor);
+
+  allShifts.sort((a, b) => new Date(a.opened_at) - new Date(b.opened_at));
+
+  const sheetTitle = "สรุปกะย้อนหลัง";
+  const sheetHeaders = [
+    "วันที่",
+    "เวลาเปิด",
+    "เวลาปิด",
+    "เงินเปิดกะ",
+    "ขายเงินสด",
+    "รับเข้า (Pay In)",
+    "จ่ายออก (Pay Out)",
+    "เงินสดควรมี",
+    "เงินสดนับจริง",
+    "ผลต่าง (ขาด/เกิน)",
+    "ยอดขายสุทธิ",
+    "รายละเอียดเบิกจ่าย (Pay Out / Pay In)",
+  ];
+
+  let sheet = doc.sheetsByIndex.find((s) => s.title === sheetTitle);
+  if (!sheet) {
+    sheet = await doc.addSheet({
+      title: sheetTitle,
+      headerValues: sheetHeaders,
+    });
+  } else {
+    await sheet.clear();
+    await sheet.setHeaderRow(sheetHeaders);
+  }
+
+  let totalCashSales = 0;
+  let totalPaidIn = 0;
+  let totalPaidOut = 0;
+  let totalNetDiff = 0;
+  let totalNetSales = 0;
+
+  const rowsToAdd = [];
+  for (const s of allShifts) {
+    const dt = DateTime.fromISO(s.opened_at).setZone("Asia/Bangkok");
+    const openDate = dt.toFormat("dd/MM/yyyy");
+    const openTime = dt.toFormat("HH:mm");
+    const closeTime = s.closed_at
+      ? DateTime.fromISO(s.closed_at).setZone("Asia/Bangkok").toFormat("HH:mm")
+      : "ยังไม่ปิด";
+
+    const startCash = s.starting_cash != null ? s.starting_cash : 0;
+    const cashSales = s.cash_payments != null ? s.cash_payments : 0;
+    const paidIn = s.paid_in != null ? s.paid_in : 0;
+    const paidOut = s.paid_out != null ? s.paid_out : 0;
+    const expected = s.expected_cash != null ? s.expected_cash : 0;
+    const actual = s.actual_cash != null ? s.actual_cash : 0;
+    const diff =
+      s.actual_cash != null && s.expected_cash != null
+        ? s.actual_cash - s.expected_cash
+        : 0;
+    const netSales = s.net_sales != null ? s.net_sales : 0;
+
+    totalCashSales += cashSales;
+    totalPaidIn += paidIn;
+    totalPaidOut += paidOut;
+    totalNetDiff += diff;
+    totalNetSales += netSales;
+
+    const diffStr =
+      diff > 0
+        ? ("+" + diff.toLocaleString())
+        : diff < 0
+        ? diff.toLocaleString()
+        : "0";
+
+    const movements = (s.cash_movements || [])
+      .map(
+        (m) =>
+          m.type + " ฿" + m.money_amount + (m.comment ? " (" + m.comment + ")" : "")
+      )
+      .join(" | ");
+
+    rowsToAdd.push([
+      openDate,
+      openTime,
+      closeTime,
+      startCash,
+      cashSales,
+      paidIn,
+      paidOut,
+      expected,
+      actual,
+      diffStr,
+      netSales,
+      movements || "-",
+    ]);
+  }
+
+  rowsToAdd.push([
+    "รวมทั้งสิ้น",
+    "-",
+    "-",
+    "-",
+    totalCashSales,
+    totalPaidIn,
+    totalPaidOut,
+    "-",
+    "-",
+    totalNetDiff > 0 ? ("+" + totalNetDiff.toLocaleString()) : totalNetDiff.toLocaleString(),
+    totalNetSales,
+    "รวมทั้งหมด " + allShifts.length + " กะ",
+  ]);
+
+  await sheet.addRows(rowsToAdd);
+
+  return {
+    count: allShifts.length,
+    sheetTitle,
+    sheetUrl: "https://docs.google.com/spreadsheets/d/" + GOOGLE_SHEET_ID + "/edit",
+  };
+}
+
 async function sendToDiscord(embed) {
   if (!DISCORD_WEBHOOK_URL) {
     console.error("Discord webhook URL is not configured!");
