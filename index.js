@@ -308,6 +308,12 @@ app.get("/monthly", async (req, res) => {
 // Endpoint to keep the server awake (for cron-job.org)
 
 // Expose debug endpoint
+app.get("/export-morning-sales", async (req, res) => {
+  // Respond immediately — heavy work runs in background
+  res.json({ success: true, message: "กำลังดึงข้อมูลยอดขายช่วงเช้า 07:30-08:30 ย้อนหลังทั้งหมด อาจใช้เวลา 3-5 นาที ข้อมูลจะถูกบันทึกลง Google Sheets เมื่อเสร็จสิ้น" });
+  exportMorningSalesToGoogleSheet().catch(err => console.error("Export morning sales error:", err));
+});
+
 app.get("/export-late-shifts", async (req, res) => {
   try {
     const result = await exportLateShiftsToGoogleSheet();
@@ -595,6 +601,210 @@ async function exportShiftsToGoogleSheet(daysBack = 31) {
     sheetTitle,
     sheetUrl: "https://docs.google.com/spreadsheets/d/" + GOOGLE_SHEET_ID + "/edit",
   };
+}
+
+async function exportMorningSalesToGoogleSheet() {
+  if (!GOOGLE_SHEET_ID || !googleServiceAccountAuth) {
+    throw new Error("Google Sheets integration is not fully configured.");
+  }
+
+  console.log("Starting morning sales export (07:30-08:30)...");
+
+  // Fetch drink category IDs
+  const catRes = await axios.get("https://api.loyverse.com/v1.0/categories", {
+    headers: { Authorization: "Bearer " + LOYVERSE_ACCESS_TOKEN },
+  });
+  const drinkCatNames = ["SpacialCoffee", "NonCoffee", "BrownCoffee", "BlackCoffee"];
+  const drinkCatIds = new Set(
+    catRes.data.categories
+      .filter((c) => drinkCatNames.includes(c.name))
+      .map((c) => c.id)
+  );
+
+  // Fetch item catalog to map item_id -> category
+  let allItems = [];
+  let itemCursor = null;
+  do {
+    const params = { limit: 250 };
+    if (itemCursor) params.cursor = itemCursor;
+    const itemRes = await axios.get("https://api.loyverse.com/v1.0/items", {
+      params,
+      headers: { Authorization: "Bearer " + LOYVERSE_ACCESS_TOKEN },
+    });
+    allItems = allItems.concat(itemRes.data.items || []);
+    itemCursor = itemRes.data.cursor;
+  } while (itemCursor);
+
+  const itemMap = {};
+  allItems.forEach((it) => {
+    itemMap[it.id] = {
+      name: it.item_name,
+      isDrink: drinkCatIds.has(it.category_id),
+    };
+  });
+
+  // Generate months from 2024-07 to current
+  const months = [];
+  let cur = DateTime.fromISO("2024-07-01T00:00:00", { zone: "Asia/Bangkok" });
+  const now = DateTime.now().setZone("Asia/Bangkok");
+  while (cur <= now) {
+    months.push(cur.toFormat("yyyy-MM"));
+    cur = cur.plus({ months: 1 });
+  }
+
+  // Fetch receipts month by month, filter 07:30-08:30 BKK
+  const dailyData = {}; // { "yyyy-MM-dd": { cups, revenue, items: [] } }
+  const monthlySummary = {}; // { "yyyy-MM": { cups, revenue, days: Set } }
+
+  for (const mStr of months) {
+    const startIso = DateTime.fromISO(mStr + "-01T00:00:00", { zone: "Asia/Bangkok" })
+      .toUTC()
+      .toISO();
+    const endIso = DateTime.fromISO(mStr + "-01T00:00:00", { zone: "Asia/Bangkok" })
+      .endOf("month")
+      .toUTC()
+      .toISO();
+
+    let receiptCursor = null;
+    do {
+      const params = {
+        limit: 250,
+        created_at_min: startIso,
+        created_at_max: endIso,
+      };
+      if (receiptCursor) params.cursor = receiptCursor;
+
+      const res = await axios.get("https://api.loyverse.com/v1.0/receipts", {
+        params,
+        headers: { Authorization: "Bearer " + LOYVERSE_ACCESS_TOKEN },
+        timeout: 30000,
+      });
+
+      const receipts = res.data.receipts || [];
+      receipts.forEach((r) => {
+        if (r.receipt_type === "REFUND") return;
+        const dt = DateTime.fromISO(r.created_at).setZone("Asia/Bangkok");
+        const totalMinutes = dt.hour * 60 + dt.minute;
+        // 07:30 = 450, 08:30 = 510
+        if (totalMinutes >= 450 && totalMinutes <= 510) {
+          const dStr = dt.toFormat("yyyy-MM-dd");
+          const mKey = dt.toFormat("yyyy-MM");
+
+          if (!dailyData[dStr]) dailyData[dStr] = { cups: 0, revenue: 0, items: [] };
+          if (!monthlySummary[mKey])
+            monthlySummary[mKey] = { cups: 0, revenue: 0, days: new Set() };
+
+          dailyData[dStr].revenue += r.total_money || 0;
+          monthlySummary[mKey].revenue += r.total_money || 0;
+          monthlySummary[mKey].days.add(dStr);
+
+          (r.line_items || []).forEach((li) => {
+            const info = itemMap[li.item_id];
+            // Default to counting as a cup if item not found (likely a drink)
+            const isDrink = info ? info.isDrink : true;
+            const qty = li.quantity || 1;
+            if (isDrink) {
+              dailyData[dStr].cups += qty;
+              monthlySummary[mKey].cups += qty;
+            }
+            dailyData[dStr].items.push((li.item_name || "ไม่ทราบชื่อ") + " x" + qty);
+          });
+        }
+      });
+      receiptCursor = res.data.cursor;
+    } while (receiptCursor);
+    console.log("Morning sales: finished month", mStr);
+  }
+
+  // Write to Google Sheets
+  const doc = new GoogleSpreadsheet(GOOGLE_SHEET_ID, googleServiceAccountAuth);
+  await doc.loadInfo();
+
+  const sheetTitle = "ยอดขายเช้า 7.30-8.30";
+  const sheetHeaders = [
+    "วันที่",
+    "จำนวนแก้ว",
+    "ยอดขาย (บาท)",
+    "รายการที่ขาย",
+  ];
+
+  let sheet = doc.sheetsByIndex.find((s) => s.title === sheetTitle);
+  if (!sheet) {
+    sheet = await doc.addSheet({ title: sheetTitle, headerValues: sheetHeaders });
+  } else {
+    await sheet.clear();
+    await sheet.setHeaderRow(sheetHeaders);
+  }
+
+  const dates = Object.keys(dailyData).sort();
+  const rowsToAdd = [];
+
+  // Monthly summary header
+  rowsToAdd.push([
+    "สรุปรายเดือน (07:30-08:30 น.)",
+    "จำนวนแก้ว",
+    "ยอดขาย (บาท)",
+    "จำนวนวันที่มียอดขาย",
+  ]);
+
+  let grandTotalCups = 0;
+  let grandTotalRevenue = 0;
+  let grandTotalDays = 0;
+
+  Object.keys(monthlySummary)
+    .sort()
+    .forEach((m) => {
+      const ms = monthlySummary[m];
+      grandTotalCups += ms.cups;
+      grandTotalRevenue += ms.revenue;
+      grandTotalDays += ms.days.size;
+      rowsToAdd.push([
+        m,
+        ms.cups + " แก้ว",
+        ms.revenue.toLocaleString() + " บาท",
+        ms.days.size + " วัน",
+      ]);
+    });
+
+  rowsToAdd.push([
+    "รวมทั้งสิ้น",
+    grandTotalCups + " แก้ว",
+    grandTotalRevenue.toLocaleString() + " บาท",
+    grandTotalDays + " วัน",
+  ]);
+
+  // Blank separator
+  rowsToAdd.push(["", "", "", ""]);
+  rowsToAdd.push(["", "", "", ""]);
+
+  // Daily detail header
+  rowsToAdd.push([
+    "รายละเอียดรายวัน (07:30-08:30 น.)",
+    "จำนวนแก้ว",
+    "ยอดขาย (บาท)",
+    "รายการที่ขาย",
+  ]);
+
+  dates.forEach((d) => {
+    const dd = dailyData[d];
+    rowsToAdd.push([
+      d,
+      dd.cups,
+      dd.revenue.toLocaleString(),
+      dd.items.join(", "),
+    ]);
+  });
+
+  const avgCupsPerDay = grandTotalDays > 0 ? (grandTotalCups / grandTotalDays).toFixed(1) : 0;
+  rowsToAdd.push([
+    "สรุปเฉลี่ย",
+    "เฉลี่ย " + avgCupsPerDay + " แก้ว/วัน",
+    "รวม " + grandTotalRevenue.toLocaleString() + " บาท",
+    "จาก " + grandTotalDays + " วัน (ทั้งหมด " + dates.length + " วันที่มีขาย)",
+  ]);
+
+  await sheet.addRows(rowsToAdd);
+  console.log("Morning sales export completed! Total cups:", grandTotalCups, "Total days:", grandTotalDays);
 }
 
 async function exportLateShiftsToGoogleSheet() {
