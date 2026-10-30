@@ -308,6 +308,16 @@ app.get("/monthly", async (req, res) => {
 // Endpoint to keep the server awake (for cron-job.org)
 
 // Expose debug endpoint
+app.get("/export-late-shifts", async (req, res) => {
+  try {
+    const result = await exportLateShiftsToGoogleSheet();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error("Export late shifts error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get("/export-shifts-sheet", async (req, res) => {
   try {
     const days = parseInt(req.query.days || "31", 10);
@@ -582,6 +592,165 @@ async function exportShiftsToGoogleSheet(daysBack = 31) {
 
   return {
     count: allShifts.length,
+    sheetTitle,
+    sheetUrl: "https://docs.google.com/spreadsheets/d/" + GOOGLE_SHEET_ID + "/edit",
+  };
+}
+
+async function exportLateShiftsToGoogleSheet() {
+  if (!GOOGLE_SHEET_ID || !googleServiceAccountAuth) {
+    throw new Error("Google Sheets integration is not fully configured.");
+  }
+
+  const doc = new GoogleSpreadsheet(
+    GOOGLE_SHEET_ID,
+    googleServiceAccountAuth
+  );
+  await doc.loadInfo();
+
+  let allShifts = [];
+  let cursor = null;
+  do {
+    const params = { limit: 250 };
+    if (cursor) params.cursor = cursor;
+    const response = await axios.get("https://api.loyverse.com/v1.0/shifts", {
+      params,
+      headers: { Authorization: "Bearer " + LOYVERSE_ACCESS_TOKEN },
+    });
+    allShifts = allShifts.concat(response.data.shifts || []);
+    cursor = response.data.cursor;
+  } while (cursor);
+
+  allShifts.sort((a, b) => new Date(a.opened_at) - new Date(b.opened_at));
+
+  // Filter: Morning shifts (04:00 - 12:59) and opened after 07:30
+  const lateShifts = [];
+  allShifts.forEach((s) => {
+    const dt = DateTime.fromISO(s.opened_at).setZone("Asia/Bangkok");
+    if (dt.hour >= 4 && dt.hour < 13) {
+      const totalMinutes = dt.hour * 60 + dt.minute;
+      if (totalMinutes > 7 * 60 + 30) {
+        const lateMinutes = totalMinutes - (7 * 60 + 30);
+        lateShifts.push({ shift: s, dt, lateMinutes });
+      }
+    }
+  });
+
+  const uniqueDays = new Set(lateShifts.map((item) => item.dt.toFormat("yyyy-MM-dd")));
+
+  const sheetTitle = "สรุปเปิดกะสาย";
+  const sheetHeaders = [
+    "วันที่",
+    "เวลาเปิดกะ",
+    "เวลาปิดกะ",
+    "เวลาเปิดสาย (นาที)",
+    "เงินเปิดกะ",
+    "ยอดขายสุทธิ",
+    "เงินสดควรมี",
+    "เงินสดนับจริง",
+    "ผลต่าง (ขาด/เกิน)",
+    "หมายเหตุเบิกจ่าย",
+  ];
+
+  let sheet = doc.sheetsByIndex.find((s) => s.title === sheetTitle);
+  if (!sheet) {
+    sheet = await doc.addSheet({
+      title: sheetTitle,
+      headerValues: sheetHeaders,
+    });
+  } else {
+    await sheet.clear();
+    await sheet.setHeaderRow(sheetHeaders);
+  }
+
+  const rowsToAdd = [];
+
+  // Summary header block
+  rowsToAdd.push([
+    "สรุปภาพรวมเปิดกะสาย (หลัง 07:30 น.)",
+    `มีทั้งหมด ${uniqueDays.size} วัน`,
+    `รวม ${lateShifts.length} กะ`,
+    "(ไม่รวมกะช่วงบ่าย/เย็น)",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+  ]);
+  rowsToAdd.push(["", "", "", "", "", "", "", "", "", ""]);
+
+  let totalLateMinutes = 0;
+
+  for (const item of lateShifts) {
+    const s = item.shift;
+    const dt = item.dt;
+    const openDate = dt.toFormat("dd/MM/yyyy");
+    const openTime = dt.toFormat("HH:mm");
+    const closeTime = s.closed_at
+      ? DateTime.fromISO(s.closed_at).setZone("Asia/Bangkok").toFormat("HH:mm")
+      : "ยังไม่ปิด";
+
+    const lateMin = item.lateMinutes;
+    totalLateMinutes += lateMin;
+
+    const startCash = s.starting_cash != null ? s.starting_cash : 0;
+    const netSales = s.net_sales != null ? s.net_sales : 0;
+    const expected = s.expected_cash != null ? s.expected_cash : 0;
+    const actual = s.actual_cash != null ? s.actual_cash : 0;
+    const diff =
+      s.actual_cash != null && s.expected_cash != null
+        ? s.actual_cash - s.expected_cash
+        : 0;
+
+    const diffStr =
+      diff > 0
+        ? ("+" + diff.toLocaleString())
+        : diff < 0
+        ? diff.toLocaleString()
+        : "0";
+
+    const movements = (s.cash_movements || [])
+      .map(
+        (m) =>
+          m.type + " ฿" + m.money_amount + (m.comment ? " (" + m.comment + ")" : "")
+      )
+      .join(" | ");
+
+    rowsToAdd.push([
+      openDate,
+      openTime,
+      closeTime,
+      lateMin + " นาที",
+      startCash,
+      netSales,
+      expected,
+      actual,
+      diffStr,
+      movements || "-",
+    ]);
+  }
+
+  const avgLateMin = lateShifts.length > 0 ? Math.round(totalLateMinutes / lateShifts.length) : 0;
+
+  rowsToAdd.push([
+    "รวมทั้งสิ้น",
+    `สายทั้งหมด ${uniqueDays.size} วัน`,
+    `รวม ${lateShifts.length} กะ`,
+    `เฉลี่ยสาย ${avgLateMin} นาที/กะ`,
+    "-",
+    "-",
+    "-",
+    "-",
+    "-",
+    `รวมเวลาสายทั้งหมด ${totalLateMinutes.toLocaleString()} นาที`,
+  ]);
+
+  await sheet.addRows(rowsToAdd);
+
+  return {
+    uniqueDaysCount: uniqueDays.size,
+    lateShiftsCount: lateShifts.length,
     sheetTitle,
     sheetUrl: "https://docs.google.com/spreadsheets/d/" + GOOGLE_SHEET_ID + "/edit",
   };
